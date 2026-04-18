@@ -1,12 +1,72 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Upload, FileText, CheckCircle, Loader2, AlertCircle, RefreshCw } from 'lucide-react';
+import { Upload, FileText, CheckCircle, Loader2, AlertCircle, RefreshCw, Clipboard } from 'lucide-react';
+
+type TranscriptChunk = {
+  text: string;
+  timestamp: [number, number];
+};
+
+type TranscriptResult = {
+  text: string;
+  chunks?: TranscriptChunk[];
+};
+
+type TranscriptFormat = 'plain' | 'timestamped';
+
+const formatTimestamp = (seconds: number) => {
+  const safeSeconds = Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+  const secs = Math.floor(safeSeconds % 60);
+  const paddedMinutes = String(minutes).padStart(2, '0');
+  const paddedSeconds = String(secs).padStart(2, '0');
+
+  if (hours > 0) {
+    return `${String(hours).padStart(2, '0')}:${paddedMinutes}:${paddedSeconds}`;
+  }
+
+  return `${paddedMinutes}:${paddedSeconds}`;
+};
+
+const getTranscriptText = (transcript: TranscriptResult, format: TranscriptFormat) => {
+  if (format === 'timestamped' && transcript.chunks?.length) {
+    return transcript.chunks
+      .map((chunk) => `[${formatTimestamp(chunk.timestamp[0])}] ${chunk.text.trim()}`)
+      .join('\n');
+  }
+
+  return transcript.text;
+};
+
+const copyText = async (text: string) => {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.style.position = 'fixed';
+  textarea.style.left = '-9999px';
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+  const copied = document.execCommand('copy');
+  document.body.removeChild(textarea);
+
+  if (!copied) {
+    throw new Error('Copy failed');
+  }
+};
 
 export default function App() {
   const [status, setStatus] = useState<'idle' | 'loading_model' | 'ready' | 'decoding' | 'transcribing' | 'complete' | 'error'>('idle');
   const [progressMsg, setProgressMsg] = useState('');
   const [downloadProgress, setDownloadProgress] = useState<number>(0);
   const [errorMsg, setErrorMsg] = useState('');
-  const [transcript, setTranscript] = useState<{ text: string, chunks?: { text: string, timestamp: [number, number] }[] } | null>(null);
+  const [transcript, setTranscript] = useState<TranscriptResult | null>(null);
+  const [transcriptFormat, setTranscriptFormat] = useState<TranscriptFormat>('timestamped');
+  const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'error'>('idle');
   
   const workerRef = useRef<Worker>(null);
   const audioCtxRef = useRef<AudioContext>(null);
@@ -41,6 +101,8 @@ export default function App() {
         } else if (msgStatus === 'complete') {
           setStatus('complete');
           setTranscript(result);
+          setTranscriptFormat(result?.chunks?.length ? 'timestamped' : 'plain');
+          setCopyStatus('idle');
           setProgressMsg('');
         } else if (msgStatus === 'error') {
           setStatus('error');
@@ -60,6 +122,10 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    setCopyStatus('idle');
+  }, [transcriptFormat]);
+
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -73,6 +139,7 @@ export default function App() {
     try {
       setTranscript(null);
       setErrorMsg('');
+      setCopyStatus('idle');
       setStatus('decoding');
       setProgressMsg('Extracting audio from file...');
 
@@ -102,8 +169,39 @@ export default function App() {
   const reset = () => {
     setTranscript(null);
     setErrorMsg('');
+    setCopyStatus('idle');
     setStatus('ready');
     setProgressMsg('');
+  };
+
+  const exportTranscriptText = transcript ? getTranscriptText(transcript, transcriptFormat) : '';
+  const hasTimestampedTranscript = Boolean(transcript?.chunks?.length);
+
+  const handleCopyTranscript = async () => {
+    if (!exportTranscriptText) return;
+
+    try {
+      await copyText(exportTranscriptText);
+      setCopyStatus('copied');
+    } catch (err) {
+      console.error(err);
+      setCopyStatus('error');
+    }
+  };
+
+  const handleDownloadTranscript = () => {
+    if (!exportTranscriptText) return;
+
+    const blob = new Blob([exportTranscriptText], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const formatSuffix = transcriptFormat === 'timestamped' ? 'timestamps' : 'plain';
+    a.href = url;
+    a.download = `transcript-${formatSuffix}-${Date.now()}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   return (
@@ -176,23 +274,74 @@ export default function App() {
             {/* Complete State */}
             {status === 'complete' && transcript && (
               <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
-                <div className="flex flex-row items-center justify-between mb-6">
-                   <div className="flex flex-row items-center space-x-3 text-emerald-600">
-                     <CheckCircle className="h-6 w-6" />
-                     <h3 className="text-lg font-semibold">Transcription Complete</h3>
-                   </div>
-                   <button onClick={reset} className="text-sm text-indigo-600 hover:text-indigo-700 font-medium">
-                     Transcribe another file
-                   </button>
+                <div className="mb-6 space-y-4">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex flex-row items-center space-x-3 text-emerald-600">
+                      <CheckCircle className="h-6 w-6" />
+                      <h3 className="text-lg font-semibold">Transcription Complete</h3>
+                    </div>
+                    <button onClick={reset} className="text-sm text-indigo-600 hover:text-indigo-700 font-medium sm:text-right">
+                      Transcribe another file
+                    </button>
+                  </div>
+
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                    <div className="inline-flex w-full rounded-lg border border-slate-200 bg-slate-100 p-1 sm:w-auto">
+                      <button
+                        type="button"
+                        onClick={() => setTranscriptFormat('plain')}
+                        aria-pressed={transcriptFormat === 'plain'}
+                        className={`flex-1 rounded-md px-3 py-2 text-sm font-medium transition sm:flex-none ${
+                          transcriptFormat === 'plain'
+                            ? 'bg-white text-slate-900 shadow-sm'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        No timestamps
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setTranscriptFormat('timestamped')}
+                        disabled={!hasTimestampedTranscript}
+                        aria-pressed={transcriptFormat === 'timestamped'}
+                        className={`flex-1 rounded-md px-3 py-2 text-sm font-medium transition sm:flex-none ${
+                          transcriptFormat === 'timestamped'
+                            ? 'bg-white text-slate-900 shadow-sm'
+                            : 'text-slate-600 hover:text-slate-900'
+                        } ${!hasTimestampedTranscript ? 'cursor-not-allowed opacity-50' : ''}`}
+                      >
+                        With timestamps
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-row">
+                      <button
+                        type="button"
+                        onClick={handleCopyTranscript}
+                        className="flex flex-row items-center justify-center gap-2 rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                      >
+                        <Clipboard className="h-4 w-4" />
+                        <span>{copyStatus === 'copied' ? 'Copied' : copyStatus === 'error' ? 'Copy failed' : 'Copy'}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleDownloadTranscript}
+                        className="flex flex-row items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-700"
+                      >
+                        <FileText className="h-4 w-4" />
+                        <span>Download .TXT</span>
+                      </button>
+                    </div>
+                  </div>
                 </div>
                 
                 <div className="bg-slate-50 rounded-xl p-6 border border-slate-200">
-                  {transcript.chunks && transcript.chunks.length > 0 ? (
+                  {transcriptFormat === 'timestamped' && transcript.chunks && transcript.chunks.length > 0 ? (
                     <div className="space-y-4">
                        {transcript.chunks.map((chunk, i) => (
                          <div key={i} className="flex flex-row gap-4">
                            <span className="text-xs font-mono text-slate-400 mt-1 whitespace-nowrap">
-                             [{new Date(chunk.timestamp[0] * 1000).toISOString().substring(14, 19)}]
+                             [{formatTimestamp(chunk.timestamp[0])}]
                            </span>
                            <p className="text-slate-800 leading-relaxed font-sans">{chunk.text}</p>
                          </div>
@@ -201,26 +350,6 @@ export default function App() {
                   ) : (
                     <p className="text-slate-800 leading-relaxed whitespace-pre-wrap">{transcript.text}</p>
                   )}
-                </div>
-
-                <div className="mt-6 flex flex-row gap-3">
-                   <button 
-                     onClick={() => {
-                        const blob = new Blob([transcript.text], { type: 'text/plain' });
-                        const url = URL.createObjectURL(blob);
-                        const a = document.createElement('a');
-                        a.href = url;
-                        a.download = `transcript-${Date.now()}.txt`;
-                        document.body.appendChild(a);
-                        a.click();
-                        document.body.removeChild(a);
-                        URL.revokeObjectURL(url);
-                     }}
-                     className="flex-1 flex flex-row items-center justify-center space-x-2 py-3 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 transition"
-                   >
-                     <FileText className="h-5 w-5" />
-                     <span>Download .TXT</span>
-                   </button>
                 </div>
               </div>
             )}
