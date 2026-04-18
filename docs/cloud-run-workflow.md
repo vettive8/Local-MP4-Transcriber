@@ -51,11 +51,11 @@ gcloud run deploy local-mp4-transcriber --source . --region REGION --allow-unaut
 
 Replace `REGION` with your Cloud Run region, for example `europe-west1` or `us-central1`.
 
-## Secrets
+## Environment
 
-Do not commit `.env.local` or real API keys. The repository ignores `.env*` files except `.env.example`.
+No environment variables or API keys are required for the current app. Transcription runs locally in the browser with transformers.js and Whisper.
 
-If future Gemini features need `GEMINI_API_KEY` on Cloud Run, store it in Google Secret Manager or configure it as a Cloud Run secret-backed environment variable.
+The repository still ignores `.env*` files except `.env.example`, so future local experiments do not accidentally get committed.
 
 ## Cleanup
 
@@ -73,4 +73,3 @@ To work again later, clone the repository again from GitHub.
 - Cloud Run continuous deployment from Git: https://cloud.google.com/run/docs/continuous-deployment
 - Cloud Run deploy from source: https://cloud.google.com/run/docs/deploying-source-code
 - Google Cloud Node.js buildpacks: https://cloud.google.com/docs/buildpacks/nodejs
-- Cloud Run secrets: https://cloud.google.com/run/docs/configuring/services/secrets
