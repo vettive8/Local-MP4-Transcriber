@@ -18,7 +18,10 @@ self.onmessage = async (e) => {
         transcriber = await pipeline('automatic-speech-recognition', 'Xenova/whisper-tiny.en', {
           progress_callback: (info: any) => {
             self.postMessage({ status: 'progress', info });
-          }
+          },
+          // By default, it tries to load a 4-bit quantized model which fails in some browsers
+          // with "Missing required scale". Using fp32 bypasses this bug.
+          dtype: 'fp32'
         });
 
         self.postMessage({ status: 'ready' });
