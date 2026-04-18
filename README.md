@@ -18,3 +18,9 @@ View your app in AI Studio: https://ai.studio/apps/f9687355-65a2-46f2-ac25-33cee
 2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
 3. Run the app:
    `npm run dev`
+
+## Publish from GitHub to Cloud Run
+
+This app can be worked on locally, pushed to the private GitHub repository, and published from GitHub to Cloud Run.
+
+See [docs/cloud-run-workflow.md](docs/cloud-run-workflow.md) for the local Git workflow, Cloud Run setup, and cleanup steps.
