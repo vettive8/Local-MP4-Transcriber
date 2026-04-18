@@ -1,0 +1,6 @@
+{
+  "name": "Local MP4 Transcriber",
+  "description": "Convert MP4 videos to transcripts entirely locally in your browser using Hugging Face transformers.js. 100% free, no external APIs.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
