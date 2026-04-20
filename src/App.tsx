@@ -215,7 +215,7 @@ export default function App() {
           <p className="mt-2 text-lg text-slate-600">
             Convert MP4 video audio to text directly in your browser. 
             <br className="max-sm:hidden" />
-            No API limits, no accounts, entirely offline and private.
+            No API limits, no accounts, and private.
           </p>
         </div>
 
