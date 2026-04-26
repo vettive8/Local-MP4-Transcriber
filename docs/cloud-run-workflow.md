@@ -53,7 +53,14 @@ Replace `REGION` with your Cloud Run region, for example `europe-west1` or `us-c
 
 ## Environment
 
-No environment variables or API keys are required for the current app. Transcription runs locally in the browser with transformers.js and Whisper.
+No environment variables or API keys are required for local transcription. Transcription runs locally in the browser with transformers.js and Whisper.
+
+The YouTube audio converter runs server-side on Cloud Run. If YouTube requires authentication or attestation for Cloud Run traffic, configure one of these on the Cloud Run service:
+
+- `YOUTUBE_COOKIE`: a YouTube `Cookie` header value from an account that has access to the content.
+- `YOUTUBE_VISITOR_DATA` and `YOUTUBE_PO_TOKEN`: a matching visitor data and PO token pair.
+
+Keep these values out of git and rotate them if the account session changes.
 
 The repository still ignores `.env*` files except `.env.example`, so future local experiments do not accidentally get committed.
 

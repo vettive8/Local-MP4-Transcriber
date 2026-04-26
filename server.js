@@ -18,9 +18,15 @@ const maxYoutubeDurationSeconds = Number(process.env.MAX_YOUTUBE_DURATION_SECOND
 let youtubeClientPromise = null;
 
 const getQueryValue = (value) => (typeof value === 'string' ? value.trim() : '');
+const getEnvValue = (name) => process.env[name]?.trim() || undefined;
 
 const getYoutubeClient = () => {
-  youtubeClientPromise ||= Innertube.create();
+  youtubeClientPromise ||= Innertube.create({
+    cookie: getEnvValue('YOUTUBE_COOKIE'),
+    visitor_data: getEnvValue('YOUTUBE_VISITOR_DATA'),
+    po_token: getEnvValue('YOUTUBE_PO_TOKEN'),
+  });
+
   return youtubeClientPromise;
 };
 
@@ -63,6 +69,16 @@ const sanitizeFilename = (value) => {
 
 const sendApiError = (res, status, message) => {
   res.status(status).json({error: message});
+};
+
+const isYoutubeAuthError = (err) => /login|required|sign in|bot/i.test(err?.message || '');
+
+const getYoutubeErrorMessage = (err, fallback) => {
+  if (isYoutubeAuthError(err)) {
+    return 'YouTube is requiring authentication for this Cloud Run server. Configure YOUTUBE_COOKIE or YOUTUBE_VISITOR_DATA plus YOUTUBE_PO_TOKEN on the service, then redeploy.';
+  }
+
+  return err.message || fallback;
 };
 
 const getYoutubeBasicInfo = async (youtube, videoId) => {
@@ -173,8 +189,8 @@ app.get('/api/youtube/info', async (req, res) => {
     res.json(await getYoutubeMetadata(url, info, durationSeconds));
   } catch (err) {
     console.error(`YouTube info failed: ${err.message}`);
-    const status = err.statusCode || 502;
-    sendApiError(res, status, err.message || 'Could not read the YouTube video.');
+    const status = err.statusCode || (isYoutubeAuthError(err) ? 401 : 502);
+    sendApiError(res, status, getYoutubeErrorMessage(err, 'Could not read the YouTube video.'));
   }
 });
 
@@ -247,8 +263,8 @@ app.get('/api/youtube/convert', async (req, res) => {
     ffmpeg.stdout.pipe(res);
   } catch (err) {
     console.error(`YouTube conversion failed: ${err.message}`);
-    const status = err.statusCode || 502;
-    sendApiError(res, status, err.message || 'Could not convert the YouTube video.');
+    const status = err.statusCode || (isYoutubeAuthError(err) ? 401 : 502);
+    sendApiError(res, status, getYoutubeErrorMessage(err, 'Could not convert the YouTube video.'));
   }
 });
 
