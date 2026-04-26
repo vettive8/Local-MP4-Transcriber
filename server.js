@@ -271,11 +271,13 @@ app.get('/api/youtube/convert', async (req, res) => {
 app.use(
   express.static(distDir, {
     immutable: true,
+    index: false,
     maxAge: '1y',
   }),
 );
 
 app.get('*', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.sendFile(path.join(distDir, 'index.html'));
 });
 
