@@ -12,6 +12,8 @@ const app = express();
 const port = process.env.PORT || 8080;
 const distDir = path.join(__dirname, 'dist');
 const audioFormats = new Set(['mp3', 'wav']);
+const youtubeInfoClients = ['ANDROID', 'IOS', 'WEB'];
+const youtubeDownloadClients = ['ANDROID', 'IOS', 'WEB'];
 const maxYoutubeDurationSeconds = Number(process.env.MAX_YOUTUBE_DURATION_SECONDS || 60 * 60 * 2);
 let youtubeClientPromise = null;
 
@@ -63,6 +65,83 @@ const sendApiError = (res, status, message) => {
   res.status(status).json({error: message});
 };
 
+const getYoutubeBasicInfo = async (youtube, videoId) => {
+  let fallbackInfo = null;
+  let lastError = null;
+
+  for (const client of youtubeInfoClients) {
+    try {
+      const info = await youtube.getBasicInfo(videoId, {client});
+      const details = info.basic_info || {};
+      fallbackInfo ||= info;
+
+      if (details.title || details.author || details.duration) {
+        return info;
+      }
+    } catch (err) {
+      lastError = err;
+      console.warn(`YouTube metadata lookup failed with ${client}: ${err.message}`);
+    }
+  }
+
+  if (fallbackInfo) {
+    return fallbackInfo;
+  }
+
+  throw lastError || new Error('Could not read the YouTube video.');
+};
+
+const getYoutubeOEmbed = async (url) => {
+  try {
+    const response = await fetch(`https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(url)}`);
+
+    if (!response.ok) {
+      return {};
+    }
+
+    return response.json();
+  } catch (err) {
+    console.warn(`YouTube oEmbed lookup failed: ${err.message}`);
+    return {};
+  }
+};
+
+const getYoutubeMetadata = async (url, info, durationSeconds) => {
+  const details = info.basic_info || {};
+  const needsFallback = !details.title || !details.author || !details.thumbnail?.length;
+  const fallback = needsFallback ? await getYoutubeOEmbed(url) : {};
+  const thumbnail = details.thumbnail?.at(-1)?.url || fallback.thumbnail_url || '';
+
+  return {
+    title: details.title || fallback.title || 'YouTube audio',
+    author: details.author || details.channel?.name || fallback.author_name || '',
+    durationSeconds,
+    thumbnail,
+  };
+};
+
+const getYoutubeAudioStream = async (youtube, videoId) => {
+  let lastError = null;
+
+  for (const client of youtubeDownloadClients) {
+    try {
+      const webAudioStream = await youtube.download(videoId, {
+        type: 'audio',
+        quality: 'best',
+        format: 'any',
+        client,
+      });
+
+      return Readable.fromWeb(webAudioStream);
+    } catch (err) {
+      lastError = err;
+      console.warn(`YouTube audio stream failed with ${client}: ${err.message}`);
+    }
+  }
+
+  throw lastError || new Error('YouTube did not provide a downloadable audio stream.');
+};
+
 const validateYoutubeRequest = async (url) => {
   const videoId = getYoutubeVideoId(url);
 
@@ -73,7 +152,7 @@ const validateYoutubeRequest = async (url) => {
   }
 
   const youtube = await getYoutubeClient();
-  const info = await youtube.getBasicInfo(videoId, {client: 'IOS'});
+  const info = await getYoutubeBasicInfo(youtube, videoId);
   const durationSeconds = Number(info.basic_info.duration || 0);
 
   if (durationSeconds > maxYoutubeDurationSeconds) {
@@ -91,16 +170,9 @@ app.get('/api/youtube/info', async (req, res) => {
 
   try {
     const {info, durationSeconds} = await validateYoutubeRequest(url);
-    const details = info.basic_info;
-    const thumbnail = details.thumbnail?.at(-1)?.url || '';
-
-    res.json({
-      title: details.title,
-      author: details.author || details.channel?.name || '',
-      durationSeconds,
-      thumbnail,
-    });
+    res.json(await getYoutubeMetadata(url, info, durationSeconds));
   } catch (err) {
+    console.error(`YouTube info failed: ${err.message}`);
     const status = err.statusCode || 502;
     sendApiError(res, status, err.message || 'Could not read the YouTube video.');
   }
@@ -122,7 +194,8 @@ app.get('/api/youtube/convert', async (req, res) => {
 
   try {
     const {info, videoId, youtube} = await validateYoutubeRequest(url);
-    const title = sanitizeFilename(info.basic_info.title || 'youtube-audio');
+    const metadata = await getYoutubeMetadata(url, info, 0);
+    const title = sanitizeFilename(metadata.title || 'youtube-audio');
     const filename = `${title}.${format}`;
     const contentType = format === 'mp3' ? 'audio/mpeg' : 'audio/wav';
     const ffmpegArgs =
@@ -130,13 +203,7 @@ app.get('/api/youtube/convert', async (req, res) => {
         ? ['-hide_banner', '-loglevel', 'error', '-i', 'pipe:0', '-vn', '-codec:a', 'libmp3lame', '-b:a', '192k', '-f', 'mp3', 'pipe:1']
         : ['-hide_banner', '-loglevel', 'error', '-i', 'pipe:0', '-vn', '-codec:a', 'pcm_s16le', '-ar', '44100', '-f', 'wav', 'pipe:1'];
 
-    const webAudioStream = await youtube.download(videoId, {
-      type: 'audio',
-      quality: 'best',
-      format: 'any',
-      client: 'IOS',
-    });
-    const audioStream = Readable.fromWeb(webAudioStream);
+    const audioStream = await getYoutubeAudioStream(youtube, videoId);
     const ffmpeg = spawn(ffmpegPath, ffmpegArgs, {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -179,6 +246,7 @@ app.get('/api/youtube/convert', async (req, res) => {
     audioStream.pipe(ffmpeg.stdin);
     ffmpeg.stdout.pipe(res);
   } catch (err) {
+    console.error(`YouTube conversion failed: ${err.message}`);
     const status = err.statusCode || 502;
     sendApiError(res, status, err.message || 'Could not convert the YouTube video.');
   }
