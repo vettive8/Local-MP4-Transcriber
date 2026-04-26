@@ -12,8 +12,8 @@ const app = express();
 const port = process.env.PORT || 8080;
 const distDir = path.join(__dirname, 'dist');
 const audioFormats = new Set(['mp3', 'wav']);
-const youtubeInfoClients = ['ANDROID', 'IOS', 'WEB'];
-const youtubeDownloadClients = ['ANDROID', 'IOS', 'WEB'];
+const youtubeInfoClients = ['ANDROID', 'IOS', 'MWEB', 'WEB', 'WEB_EMBEDDED', 'TV', 'TV_SIMPLY', 'TV_EMBEDDED', 'ANDROID_VR'];
+const youtubeDownloadClients = ['ANDROID', 'IOS', 'MWEB', 'WEB', 'WEB_EMBEDDED', 'TV', 'TV_SIMPLY', 'TV_EMBEDDED', 'ANDROID_VR'];
 const maxYoutubeDurationSeconds = Number(process.env.MAX_YOUTUBE_DURATION_SECONDS || 60 * 60 * 2);
 let youtubeClientPromise = null;
 
