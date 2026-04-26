@@ -38,8 +38,6 @@ type YoutubeInfo = {
 
 type YoutubeStatus = 'idle' | 'loading' | 'ready' | 'downloading' | 'error';
 
-const downloadFrameName = 'youtube-audio-download-frame';
-
 const formatTimestamp = (seconds: number) => {
   const safeSeconds = Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
   const hours = Math.floor(safeSeconds / 3600);
@@ -101,6 +99,20 @@ const getApiError = async (response: Response, fallback: string) => {
   } catch {
     return fallback;
   }
+};
+
+const getFilenameFromDisposition = (disposition: string | null, fallback: string) => {
+  if (!disposition) {
+    return fallback;
+  }
+
+  const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    return decodeURIComponent(utf8Match[1].replace(/"/g, ''));
+  }
+
+  const filenameMatch = disposition.match(/filename="?([^";]+)"?/i);
+  return filenameMatch?.[1] || fallback;
 };
 
 function TranscriberPage() {
@@ -477,19 +489,34 @@ function YoutubeAudioPage() {
       if (!ok) return;
     }
 
-    const downloadUrl = `/api/youtube/convert?url=${encodeURIComponent(trimmedUrl)}&format=${format}`;
-    const link = document.createElement('a');
-    link.href = downloadUrl;
-    link.target = downloadFrameName;
-    document.body.appendChild(link);
-    setStatus('downloading');
-    setDownloadStarted(true);
-    link.click();
-    document.body.removeChild(link);
+    try {
+      setStatus('downloading');
+      setErrorMsg('');
+      setDownloadStarted(false);
 
-    window.setTimeout(() => {
-      setStatus((currentStatus) => (currentStatus === 'downloading' ? 'ready' : currentStatus));
-    }, 1600);
+      const response = await fetch(`/api/youtube/convert?url=${encodeURIComponent(trimmedUrl)}&format=${format}`);
+
+      if (!response.ok) {
+        throw new Error(await getApiError(response, 'Could not download the converted audio.'));
+      }
+
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = getFilenameFromDisposition(response.headers.get('Content-Disposition'), `youtube-audio.${format}`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(objectUrl);
+      setDownloadStarted(true);
+      setStatus('ready');
+    } catch (err: any) {
+      console.error(err);
+      setDownloadStarted(false);
+      setStatus('error');
+      setErrorMsg(err.message || 'Could not download the converted audio.');
+    }
   };
 
   const clearUrl = () => {
@@ -643,8 +670,6 @@ function YoutubeAudioPage() {
           )}
         </div>
       </div>
-
-      <iframe title="YouTube audio download target" name={downloadFrameName} className="hidden" />
     </div>
   );
 }
