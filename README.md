@@ -22,12 +22,15 @@ View your app in AI Studio: https://ai.studio/apps/f9687355-65a2-46f2-ac25-33cee
 ## Architecture
 
 - `src/App.tsx` owns the React UI and tool navigation for Transcriber, YouTube, and EPUB to PDF.
+- `src/appTypes.ts`, `src/appConfig.ts`, and `src/appHelpers.ts` hold shared UI vocabulary, defaults, and browser helpers.
 - `src/epubToPdf.ts` converts EPUB files in the browser with JSZip and jsPDF.
 - `src/pdfTextLayout.js` contains testable PDF text wrapping helpers.
 - `server.js` serves the production build and exposes `/api/youtube/*` for YouTube metadata and MP3/WAV/MP4 conversion.
 - `tests/unit/` covers server helpers and PDF layout logic.
 - `tests/e2e/` covers browser flows with Playwright, including a generated EPUB-to-PDF download.
 - `.github/workflows/` runs CI and deploys Cloud Run after CI succeeds on `main`.
+
+See [docs/from-scratch-blueprint.md](docs/from-scratch-blueprint.md) for the ground-up rebuild plan and learning path.
 
 ## Testing
 

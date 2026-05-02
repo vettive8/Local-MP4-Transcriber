@@ -17,120 +17,27 @@ import {
 } from 'lucide-react';
 import {
   convertEpubToPdf,
-  type EpubPdfOptions,
   type EpubPdfResult,
 } from './epubToPdf';
-
-type AppPage = 'transcriber' | 'youtube' | 'epub';
-type YoutubeFormat = 'mp3' | 'wav' | 'mp4';
-type EpubStatus = 'idle' | 'processing' | 'complete' | 'error';
-
-type TranscriptChunk = {
-  text: string;
-  timestamp: [number, number];
-};
-
-type TranscriptResult = {
-  text: string;
-  chunks?: TranscriptChunk[];
-};
-
-type TranscriptFormat = 'plain' | 'timestamped';
-
-type YoutubeInfo = {
-  title: string;
-  author?: string;
-  durationSeconds?: number;
-  thumbnail?: string;
-};
-
-type YoutubeStatus = 'idle' | 'loading' | 'ready' | 'downloading' | 'error';
-
-const formatTimestamp = (seconds: number) => {
-  const safeSeconds = Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
-  const hours = Math.floor(safeSeconds / 3600);
-  const minutes = Math.floor((safeSeconds % 3600) / 60);
-  const secs = Math.floor(safeSeconds % 60);
-  const paddedMinutes = String(minutes).padStart(2, '0');
-  const paddedSeconds = String(secs).padStart(2, '0');
-
-  if (hours > 0) {
-    return `${String(hours).padStart(2, '0')}:${paddedMinutes}:${paddedSeconds}`;
-  }
-
-  return `${paddedMinutes}:${paddedSeconds}`;
-};
-
-const formatDuration = (seconds?: number) => {
-  if (!seconds || !Number.isFinite(seconds)) {
-    return 'Unknown length';
-  }
-
-  return formatTimestamp(seconds);
-};
-
-const formatCount = (value: number) => new Intl.NumberFormat().format(value);
-
-const defaultEpubPdfOptions: EpubPdfOptions = {
-  pageSize: 'letter',
-  fontSize: 12,
-  includeTitlePage: false,
-  includeImages: true,
-};
-
-const getTranscriptText = (transcript: TranscriptResult, format: TranscriptFormat) => {
-  if (format === 'timestamped' && transcript.chunks?.length) {
-    return transcript.chunks
-      .map((chunk) => `[${formatTimestamp(chunk.timestamp[0])}] ${chunk.text.trim()}`)
-      .join('\n');
-  }
-
-  return transcript.text;
-};
-
-const copyText = async (text: string) => {
-  if (navigator.clipboard && window.isSecureContext) {
-    await navigator.clipboard.writeText(text);
-    return;
-  }
-
-  const textarea = document.createElement('textarea');
-  textarea.value = text;
-  textarea.style.position = 'fixed';
-  textarea.style.left = '-9999px';
-  document.body.appendChild(textarea);
-  textarea.focus();
-  textarea.select();
-  const copied = document.execCommand('copy');
-  document.body.removeChild(textarea);
-
-  if (!copied) {
-    throw new Error('Copy failed');
-  }
-};
-
-const getApiError = async (response: Response, fallback: string) => {
-  try {
-    const payload = await response.json();
-    return payload.error || fallback;
-  } catch {
-    return fallback;
-  }
-};
-
-const getFilenameFromDisposition = (disposition: string | null, fallback: string) => {
-  if (!disposition) {
-    return fallback;
-  }
-
-  const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
-  if (utf8Match?.[1]) {
-    return decodeURIComponent(utf8Match[1].replace(/"/g, ''));
-  }
-
-  const filenameMatch = disposition.match(/filename="?([^";]+)"?/i);
-  return filenameMatch?.[1] || fallback;
-};
+import {defaultEpubPdfOptions} from './appConfig';
+import {
+  copyText,
+  formatCount,
+  formatDuration,
+  formatTimestamp,
+  getApiError,
+  getFilenameFromDisposition,
+  getTranscriptText,
+} from './appHelpers';
+import type {
+  AppPage,
+  EpubStatus,
+  TranscriptFormat,
+  TranscriptResult,
+  YoutubeFormat,
+  YoutubeInfo,
+  YoutubeStatus,
+} from './appTypes';
 
 function TranscriberPage() {
   const [status, setStatus] = useState<
@@ -736,85 +643,127 @@ function YoutubePage() {
 }
 
 function EpubToPdfPage() {
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [status, setStatus] = useState<EpubStatus>('idle');
   const [progressMsg, setProgressMsg] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
-  const [result, setResult] = useState<EpubPdfResult | null>(null);
+  const [results, setResults] = useState<EpubPdfResult[]>([]);
+  const [failures, setFailures] = useState<Array<{fileName: string; message: string}>>([]);
 
-  const applySelectedFile = (file?: File) => {
-    if (!file) return;
+  const isEpubFile = (file: File) => {
+    return file.name.toLowerCase().endsWith('.epub') || file.type === 'application/epub+zip';
+  };
 
-    if (!file.name.toLowerCase().endsWith('.epub') && file.type !== 'application/epub+zip') {
-      setSelectedFile(null);
-      setResult(null);
+  const applySelectedFiles = (files?: FileList | File[]) => {
+    const nextFiles = Array.from(files ?? []);
+    if (!nextFiles.length) return;
+
+    if (nextFiles.some((file) => !isEpubFile(file))) {
+      setSelectedFiles([]);
+      setResults([]);
+      setFailures([]);
       setStatus('error');
-      setErrorMsg('Please choose an EPUB file.');
+      setErrorMsg('Please choose only EPUB files.');
       return;
     }
 
-    setSelectedFile(file);
-    setResult(null);
+    setSelectedFiles(nextFiles);
+    setResults([]);
+    setFailures([]);
     setStatus('idle');
     setErrorMsg('');
     setProgressMsg('');
   };
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
-    applySelectedFile(event.target.files?.[0]);
+    applySelectedFiles(event.target.files ?? undefined);
     event.target.value = '';
   };
 
   const handleFileDrop = (event: React.DragEvent<HTMLLabelElement>) => {
     event.preventDefault();
-    applySelectedFile(event.dataTransfer.files?.[0]);
+    applySelectedFiles(event.dataTransfer.files);
   };
 
   const handleConvert = async () => {
-    if (!selectedFile) {
+    if (!selectedFiles.length) {
       setStatus('error');
-      setErrorMsg('Choose an EPUB file first.');
+      setErrorMsg('Choose one or more EPUB files first.');
       return;
     }
 
-    try {
-      setStatus('processing');
-      setResult(null);
-      setErrorMsg('');
-      setProgressMsg('Reading EPUB...');
+    setStatus('processing');
+    setResults([]);
+    setFailures([]);
+    setErrorMsg('');
+    setProgressMsg(`Reading ${formatCount(selectedFiles.length)} EPUB ${selectedFiles.length === 1 ? 'file' : 'files'}...`);
 
-      const converted = await convertEpubToPdf(selectedFile, defaultEpubPdfOptions, setProgressMsg);
-      setResult(converted);
-      setStatus('complete');
-      setProgressMsg('');
-    } catch (err: any) {
-      console.error(err);
-      setStatus('error');
-      setErrorMsg(err.message || 'Could not convert this EPUB.');
-      setProgressMsg('');
+    const convertedResults: EpubPdfResult[] = [];
+    const failedResults: Array<{fileName: string; message: string}> = [];
+
+    for (const [index, file] of selectedFiles.entries()) {
+      try {
+        const currentPosition = `${formatCount(index + 1)} of ${formatCount(selectedFiles.length)}`;
+        setProgressMsg(`Converting ${currentPosition}: ${file.name}`);
+
+        const converted = await convertEpubToPdf(file, defaultEpubPdfOptions, (message) => {
+          setProgressMsg(`${currentPosition}: ${file.name} - ${message}`);
+        });
+        convertedResults.push(converted);
+        setResults([...convertedResults]);
+      } catch (err: any) {
+        console.error(err);
+        failedResults.push({
+          fileName: file.name,
+          message: err.message || 'Could not convert this EPUB.',
+        });
+        setFailures([...failedResults]);
+      }
     }
+
+    if (convertedResults.length) {
+      setStatus('complete');
+      if (failedResults.length) {
+        setErrorMsg(`${formatCount(failedResults.length)} EPUB ${failedResults.length === 1 ? 'file' : 'files'} could not be converted.`);
+      }
+    } else {
+      setStatus('error');
+      setErrorMsg(failedResults[0]?.message || 'Could not convert these EPUB files.');
+    }
+
+    setProgressMsg('');
   };
 
-  const handleDownloadPdf = () => {
-    if (!result) return;
+  const downloadPdf = (pdfResult: EpubPdfResult) => {
+    if (!pdfResult) return;
 
-    const url = URL.createObjectURL(result.blob);
+    const url = URL.createObjectURL(pdfResult.blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = result.filename;
+    link.download = pdfResult.filename;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  const handleDownloadAllPdfs = () => {
+    results.forEach((pdfResult, index) => {
+      window.setTimeout(() => downloadPdf(pdfResult), index * 150);
+    });
   };
 
   const reset = () => {
-    setSelectedFile(null);
-    setResult(null);
+    setSelectedFiles([]);
+    setResults([]);
+    setFailures([]);
     setStatus('idle');
     setProgressMsg('');
     setErrorMsg('');
   };
+
+  const selectedFileCount = selectedFiles.length;
+  const totalSelectedSizeKb = Math.max(1, Math.round(selectedFiles.reduce((total, file) => total + file.size, 0) / 1024));
 
   return (
     <div className="mx-auto w-full max-w-3xl space-y-8">
@@ -833,7 +782,7 @@ function EpubToPdfPage() {
       <div className="overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-xl">
         <div className="space-y-6 p-8">
           <div className="space-y-3">
-            <label className="text-sm font-semibold text-slate-700">EPUB file</label>
+            <label className="text-sm font-semibold text-slate-700">EPUB files</label>
             <label
               onDrop={handleFileDrop}
               onDragOver={(event) => event.preventDefault()}
@@ -841,26 +790,43 @@ function EpubToPdfPage() {
             >
               <Upload className="mb-4 h-12 w-12 text-slate-400" />
               <p className="mb-2 text-lg font-medium text-slate-700">
-                <span className="font-semibold text-emerald-600">Choose EPUB</span> or drag and drop
+                <span className="font-semibold text-emerald-600">Choose EPUBs</span> or drag and drop
               </p>
               <p className="max-w-sm text-sm text-slate-500">
-                {selectedFile ? selectedFile.name : 'Books, articles, manuals, and other .epub files'}
+                {selectedFileCount
+                  ? `${formatCount(selectedFileCount)} EPUB ${selectedFileCount === 1 ? 'file' : 'files'} selected`
+                  : 'Books, articles, manuals, and other .epub files'}
               </p>
-              <input type="file" accept=".epub,application/epub+zip" className="hidden" onChange={handleFileUpload} />
+              <input type="file" accept=".epub,application/epub+zip" multiple className="hidden" onChange={handleFileUpload} />
             </label>
           </div>
 
           <div className="flex flex-col gap-3 border-t border-slate-100 pt-6 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-h-6 text-sm text-slate-500">
-              {selectedFile && (
-                <span>
-                  {selectedFile.name} - {formatCount(Math.max(1, Math.round(selectedFile.size / 1024)))} KB
-                </span>
+              {selectedFileCount > 0 && (
+                <div>
+                  <span>
+                    {formatCount(selectedFileCount)} EPUB {selectedFileCount === 1 ? 'file' : 'files'} - {formatCount(totalSelectedSizeKb)} KB
+                  </span>
+                  <ul className="mt-3 max-h-40 overflow-y-auto rounded-lg border border-slate-200 bg-white text-left">
+                    {selectedFiles.map((file) => (
+                      <li
+                        key={`${file.name}-${file.size}-${file.lastModified}`}
+                        className="flex flex-col gap-1 border-b border-slate-100 px-3 py-2 last:border-b-0 sm:flex-row sm:items-center sm:justify-between"
+                      >
+                        <span className="break-all font-medium text-slate-700">{file.name}</span>
+                        <span className="flex-none text-xs text-slate-500">
+                          {formatCount(Math.max(1, Math.round(file.size / 1024)))} KB
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               )}
             </div>
 
             <div className="flex flex-col gap-2 sm:flex-row">
-              {(selectedFile || result) && (
+              {(selectedFileCount > 0 || results.length > 0 || failures.length > 0) && (
                 <button
                   type="button"
                   onClick={reset}
@@ -892,42 +858,68 @@ function EpubToPdfPage() {
             </div>
           )}
 
-          {status === 'error' && (
+          {(status === 'error' || failures.length > 0) && (
             <div className="flex flex-row gap-3 rounded-xl bg-red-50 p-4 text-red-700">
               <AlertCircle className="mt-0.5 h-5 w-5 flex-none" />
               <div>
-                <p className="font-medium">Could not convert EPUB</p>
-                <p className="mt-1 text-sm text-red-600">{errorMsg}</p>
+                <p className="font-medium">{failures.length ? 'Some EPUBs could not be converted' : 'Could not convert EPUB'}</p>
+                {failures.length ? (
+                  <ul className="mt-2 space-y-1 text-sm text-red-600">
+                    {failures.map((failure) => (
+                      <li key={failure.fileName}>
+                        <span className="font-medium">{failure.fileName}:</span> {failure.message}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="mt-1 text-sm text-red-600">{errorMsg}</p>
+                )}
               </div>
             </div>
           )}
 
-          {status === 'complete' && result && (
+          {status === 'complete' && results.length > 0 && (
             <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-5">
               <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <div className="flex flex-row items-center gap-2 text-emerald-700">
                     <CheckCircle className="h-5 w-5" />
-                    <p className="font-semibold">PDF ready</p>
+                    <p className="font-semibold">{results.length === 1 ? 'PDF ready' : `${formatCount(results.length)} PDFs ready`}</p>
                   </div>
-                  <p className="mt-2 text-sm text-emerald-700">
-                    {result.title}
-                    {result.author ? ` by ${result.author}` : ''}
-                  </p>
-                  <p className="mt-1 text-xs text-emerald-600">
-                    {formatCount(result.pageCount)} pages - {formatCount(result.chapterCount)} chapters -{' '}
-                    {formatCount(result.wordCount)} words
-                  </p>
+                  <div className="mt-3 space-y-3">
+                    {results.map((pdfResult) => (
+                      <div key={pdfResult.filename} className="rounded-lg border border-emerald-100 bg-white/80 p-3">
+                        <p className="text-sm font-semibold text-emerald-700">
+                          {pdfResult.title}
+                          {pdfResult.author ? ` by ${pdfResult.author}` : ''}
+                        </p>
+                        <p className="mt-1 text-xs text-emerald-600">
+                          {formatCount(pdfResult.pageCount)} pages - {formatCount(pdfResult.chapterCount)} chapters -{' '}
+                          {formatCount(pdfResult.wordCount)} words
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => downloadPdf(pdfResult)}
+                          className="mt-3 flex h-10 flex-row items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 text-sm font-semibold text-white transition hover:bg-emerald-700"
+                        >
+                          <Download className="h-4 w-4" />
+                          <span>Download PDF</span>
+                        </button>
+                      </div>
+                    ))}
+                  </div>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={handleDownloadPdf}
-                  className="flex h-12 flex-row items-center justify-center gap-2 rounded-lg bg-emerald-600 px-5 text-sm font-semibold text-white transition hover:bg-emerald-700"
-                >
-                  <Download className="h-4 w-4" />
-                  <span>Download PDF</span>
-                </button>
+                {results.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={handleDownloadAllPdfs}
+                    className="flex h-12 flex-row items-center justify-center gap-2 rounded-lg bg-emerald-600 px-5 text-sm font-semibold text-white transition hover:bg-emerald-700"
+                  >
+                    <Download className="h-4 w-4" />
+                    <span>Download all PDFs</span>
+                  </button>
+                )}
               </div>
             </div>
           )}

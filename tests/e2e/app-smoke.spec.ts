@@ -1,7 +1,7 @@
 import {expect, test} from '@playwright/test';
 import JSZip from 'jszip';
 
-const createTinyEpub = async () => {
+const createTinyEpub = async ({title = 'Codex Fixture', author = 'Test Author'} = {}) => {
   const zip = new JSZip();
 
   zip.file('mimetype', 'application/epub+zip');
@@ -20,8 +20,8 @@ const createTinyEpub = async () => {
 <package version="3.0" unique-identifier="book-id" xmlns="http://www.idpf.org/2007/opf">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:identifier id="book-id">codex-fixture</dc:identifier>
-    <dc:title>Codex Fixture</dc:title>
-    <dc:creator>Test Author</dc:creator>
+    <dc:title>${title}</dc:title>
+    <dc:creator>${author}</dc:creator>
     <dc:language>en</dc:language>
   </metadata>
   <manifest>
@@ -94,4 +94,39 @@ test('EPUB converter produces a downloadable PDF in the browser', async ({page})
   const download = await downloadPromise;
 
   expect(download.suggestedFilename()).toBe('Codex Fixture.pdf');
+});
+
+test('EPUB converter accepts multiple dropped files and converts them in one batch', async ({page}) => {
+  await page.goto('/');
+  await page.getByRole('button', {name: 'EPUB to PDF'}).click();
+
+  const firstEpub = Array.from(await createTinyEpub({title: 'Batch One'}));
+  const secondEpub = Array.from(await createTinyEpub({title: 'Batch Two'}));
+
+  await page.evaluate(
+    ({firstEpub, secondEpub}) => {
+      const input = document.querySelector<HTMLInputElement>('input[type="file"]');
+      const dropTarget = input?.closest('label');
+      if (!dropTarget) {
+        throw new Error('Could not find EPUB drop zone.');
+      }
+
+      const dataTransfer = new DataTransfer();
+      dataTransfer.items.add(new File([new Uint8Array(firstEpub)], 'batch-one.epub', {type: 'application/epub+zip'}));
+      dataTransfer.items.add(new File([new Uint8Array(secondEpub)], 'batch-two.epub', {type: 'application/epub+zip'}));
+      dropTarget.dispatchEvent(new DragEvent('drop', {bubbles: true, cancelable: true, dataTransfer}));
+    },
+    {firstEpub, secondEpub},
+  );
+
+  await expect(page.getByText('2 EPUB files selected')).toBeVisible();
+  await expect(page.getByText('batch-one.epub', {exact: true})).toBeVisible();
+  await expect(page.getByText('batch-two.epub', {exact: true})).toBeVisible();
+
+  await page.getByRole('button', {name: 'Convert to PDF'}).click();
+
+  await expect(page.getByText('2 PDFs ready')).toBeVisible({timeout: 30_000});
+  await expect(page.getByText('Batch One by Test Author')).toBeVisible();
+  await expect(page.getByText('Batch Two by Test Author')).toBeVisible();
+  await expect(page.getByRole('button', {name: 'Download all PDFs'})).toBeVisible();
 });
