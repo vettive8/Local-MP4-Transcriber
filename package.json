@@ -12,7 +12,7 @@
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
     "test": "npm run test:unit && npm run test:e2e",
-    "test:unit": "node --test tests/unit",
+    "test:unit": "node --test tests/unit/pdfTextLayout.test.mjs tests/unit/server.test.mjs",
     "test:e2e": "playwright test",
     "test:e2e:headed": "playwright test --headed --workers=1",
     "test:live": "playwright test --headed --workers=1 --debug"
