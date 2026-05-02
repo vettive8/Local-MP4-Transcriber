@@ -10,7 +10,12 @@
     "start": "node server.js",
     "preview": "vite preview",
     "clean": "rm -rf dist",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test": "npm run test:unit && npm run test:e2e",
+    "test:unit": "node --test tests/unit",
+    "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --headed --workers=1",
+    "test:live": "playwright test --headed --workers=1 --debug"
   },
   "engines": {
     "node": "22.x"
@@ -31,6 +36,7 @@
     "youtubei.js": "^17.0.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
     "autoprefixer": "^10.4.21",

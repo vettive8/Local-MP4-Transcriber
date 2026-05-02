@@ -1,5 +1,6 @@
 import type JSZip from 'jszip';
 import type {jsPDF} from 'jspdf';
+import {wrapTextToWidth} from './pdfTextLayout.js';
 
 export type EpubPageSize = 'a4' | 'letter';
 
@@ -380,58 +381,6 @@ const getWordCount = (chapters: EpubChapter[]) =>
 
     return count + chapterWords;
   }, 0);
-
-const splitWordToWidth = (pdf: jsPDF, word: string, maxWidth: number) => {
-  const parts: string[] = [];
-  let current = '';
-
-  for (const char of Array.from(word)) {
-    const next = `${current}${char}`;
-
-    if (current && pdf.getTextWidth(next) > maxWidth) {
-      parts.push(current);
-      current = char;
-    } else {
-      current = next;
-    }
-  }
-
-  if (current) {
-    parts.push(current);
-  }
-
-  return parts;
-};
-
-const wrapTextToWidth = (pdf: jsPDF, text: string, maxWidth: number) => {
-  const lines: string[] = [];
-
-  for (const sourceLine of text.split(/\r?\n/)) {
-    const words = sourceLine.trim().split(/\s+/).filter(Boolean);
-    let currentLine = '';
-
-    for (const word of words) {
-      const candidates = pdf.getTextWidth(word) > maxWidth ? splitWordToWidth(pdf, word, maxWidth) : [word];
-
-      for (const candidate of candidates) {
-        const nextLine = currentLine ? `${currentLine} ${candidate}` : candidate;
-
-        if (currentLine && pdf.getTextWidth(nextLine) > maxWidth) {
-          lines.push(currentLine);
-          currentLine = candidate;
-        } else {
-          currentLine = nextLine;
-        }
-      }
-    }
-
-    if (currentLine) {
-      lines.push(currentLine);
-    }
-  }
-
-  return lines;
-};
 
 const createPdf = async (
   PdfDocument: JsPdfConstructor,

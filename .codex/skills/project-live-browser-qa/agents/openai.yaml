@@ -1,0 +1,4 @@
+interface:
+  display_name: "Project Live Browser QA"
+  short_description: "Run this app through visible Playwright QA."
+  default_prompt: "Use this repository live browser QA workflow to run headed Playwright checks, inspect UI behavior, capture artifacts, and iterate on frontend or integration bugs."

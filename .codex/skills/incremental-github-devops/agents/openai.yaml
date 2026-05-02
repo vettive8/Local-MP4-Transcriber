@@ -1,0 +1,4 @@
+interface:
+  display_name: "Incremental GitHub DevOps"
+  short_description: "Ship changes with branches, tests, CI, and PRs."
+  default_prompt: "Use this repository workflow to protect the stable baseline, make incremental TDD changes on the right GitHub branch, run validation, push checkpoints, and prepare CI/CD handoff."

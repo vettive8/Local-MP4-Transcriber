@@ -51,6 +51,40 @@ gcloud run deploy local-mp4-transcriber --source . --region REGION --allow-unaut
 
 Replace `REGION` with your Cloud Run region, for example `europe-west1` or `us-central1`.
 
+## GitHub Actions CI/CD
+
+This repository includes:
+
+- `.github/workflows/ci.yml`: runs typecheck, unit tests, production build, and Playwright browser smoke tests on pull requests and `main`/`codex/**` pushes.
+- `.github/workflows/deploy-cloud-run.yml`: deploys `main` to Cloud Run from source after the `CI` workflow succeeds on `main`, and can also be run manually.
+
+Configure these GitHub repository secrets before enabling production deployment:
+
+- `GCP_PROJECT_ID`: Google Cloud project ID, for example `gen-lang-client-0469918063`.
+- `GCP_REGION`: Cloud Run region, for example `us-west1`.
+- `CLOUD_RUN_SERVICE`: Cloud Run service name, for example `local-mp4-transcriber`.
+- `GCP_WORKLOAD_IDENTITY_PROVIDER`: GitHub Actions Workload Identity provider resource name.
+- `GCP_SERVICE_ACCOUNT`: deployer service account email with Cloud Run/source deploy permissions.
+
+Keep at least one stable recovery branch, such as `legacy/stable-2026-05-02`, before landing larger workflow changes.
+
+## Local Testing
+
+Run the full validation set:
+
+```powershell
+npm run lint
+npm run test:unit
+npm run build
+npm run test:e2e
+```
+
+Run visible browser testing:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run-live-browser-tests.ps1
+```
+
 ## Environment
 
 No environment variables or API keys are required for local transcription. Transcription runs locally in the browser with transformers.js and Whisper.

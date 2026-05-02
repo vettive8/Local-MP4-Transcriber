@@ -2,11 +2,11 @@
 <img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
 </div>
 
-# Local MP4 Transcriber
+# Browser Media Tools
 
-Convert MP4 video audio to text directly in your browser.
+Browser-first tools for transcription, YouTube downloads, and EPUB to PDF conversion.
 
-No API keys, no paid APIs, no accounts. The app runs locally with transformers.js and Whisper.
+No paid APIs or app accounts are required. Transcription and EPUB conversion run in the browser tab; YouTube conversion runs through the small Node/Express server because it needs server-side streaming and FFmpeg.
 
 View your app in AI Studio: https://ai.studio/apps/f9687355-65a2-46f2-ac25-33ceeb50e5cc
 
@@ -18,6 +18,31 @@ View your app in AI Studio: https://ai.studio/apps/f9687355-65a2-46f2-ac25-33cee
    `npm install`
 2. Run the app:
    `npm run dev`
+
+## Architecture
+
+- `src/App.tsx` owns the React UI and tool navigation for Transcriber, YouTube, and EPUB to PDF.
+- `src/epubToPdf.ts` converts EPUB files in the browser with JSZip and jsPDF.
+- `src/pdfTextLayout.js` contains testable PDF text wrapping helpers.
+- `server.js` serves the production build and exposes `/api/youtube/*` for YouTube metadata and MP3/WAV/MP4 conversion.
+- `tests/unit/` covers server helpers and PDF layout logic.
+- `tests/e2e/` covers browser flows with Playwright, including a generated EPUB-to-PDF download.
+- `.github/workflows/` runs CI and deploys Cloud Run after CI succeeds on `main`.
+
+## Testing
+
+```powershell
+npm run lint
+npm run test:unit
+npm run build
+npm run test:e2e
+```
+
+For visible browser QA:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run-live-browser-tests.ps1
+```
 
 ## Publish from GitHub to Cloud Run
 
