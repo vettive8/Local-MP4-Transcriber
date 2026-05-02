@@ -1,10 +1,12 @@
 import React, {useEffect, useRef, useState} from 'react';
 import {
   AlertCircle,
+  BookOpen,
   CheckCircle,
   Clipboard,
   Clock,
   Download,
+  FileDown,
   FileText,
   Link,
   Loader2,
@@ -13,9 +15,15 @@ import {
   Upload,
   Youtube,
 } from 'lucide-react';
+import {
+  convertEpubToPdf,
+  type EpubPdfOptions,
+  type EpubPdfResult,
+} from './epubToPdf';
 
-type AppPage = 'transcriber' | 'youtube';
-type AudioFormat = 'mp3' | 'wav';
+type AppPage = 'transcriber' | 'youtube' | 'epub';
+type YoutubeFormat = 'mp3' | 'wav' | 'mp4';
+type EpubStatus = 'idle' | 'processing' | 'complete' | 'error';
 
 type TranscriptChunk = {
   text: string;
@@ -59,6 +67,15 @@ const formatDuration = (seconds?: number) => {
   }
 
   return formatTimestamp(seconds);
+};
+
+const formatCount = (value: number) => new Intl.NumberFormat().format(value);
+
+const defaultEpubPdfOptions: EpubPdfOptions = {
+  pageSize: 'letter',
+  fontSize: 12,
+  includeTitlePage: false,
+  includeImages: true,
 };
 
 const getTranscriptText = (transcript: TranscriptResult, format: TranscriptFormat) => {
@@ -128,50 +145,13 @@ function TranscriberPage() {
 
   const workerRef = useRef<Worker | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
+  const modelReadyRef = useRef(false);
 
   useEffect(() => {
-    workerRef.current = new Worker(new URL('./worker.ts', import.meta.url), {type: 'module'});
-
-    if (workerRef.current) {
-      workerRef.current.onmessage = (e) => {
-        const {status: msgStatus, message, info, result} = e.data;
-
-        if (msgStatus === 'loading') {
-          setStatus('loading_model');
-          setProgressMsg(message);
-        } else if (msgStatus === 'progress' && info) {
-          if (info.status === 'init' || info.status === 'progress' || info.status === 'downloading') {
-            if (info.name && info.progress !== undefined) {
-              setDownloadProgress(Math.round(info.progress));
-              setProgressMsg(`Downloading model files... ${Math.round(info.progress)}%`);
-            }
-          } else if (info.status === 'done') {
-            setDownloadProgress(100);
-          }
-        } else if (msgStatus === 'ready') {
-          setStatus('ready');
-          setProgressMsg('');
-          setDownloadProgress(0);
-        } else if (msgStatus === 'transcribing') {
-          setStatus('transcribing');
-          setProgressMsg('Transcribing audio using Whisper model...');
-        } else if (msgStatus === 'complete') {
-          setStatus('complete');
-          setTranscript(result);
-          setTranscriptFormat(result?.chunks?.length ? 'timestamped' : 'plain');
-          setCopyStatus('idle');
-          setProgressMsg('');
-        } else if (msgStatus === 'error') {
-          setStatus('error');
-          setErrorMsg(message);
-        }
-      };
-
-      workerRef.current.postMessage({type: 'load'});
-    }
-
     return () => {
       workerRef.current?.terminate();
+      workerRef.current = null;
+      modelReadyRef.current = false;
       if (audioCtxRef.current?.state !== 'closed') {
         audioCtxRef.current?.close().catch(console.error);
       }
@@ -181,6 +161,67 @@ function TranscriberPage() {
   useEffect(() => {
     setCopyStatus('idle');
   }, [transcriptFormat]);
+
+  const createTranscriberWorker = () => {
+    if (workerRef.current) {
+      return workerRef.current;
+    }
+
+    const worker = new Worker(new URL('./worker.ts', import.meta.url), {type: 'module'});
+
+    worker.onmessage = (e) => {
+      const {status: msgStatus, message, info, result} = e.data;
+
+      if (msgStatus === 'loading') {
+        setStatus('loading_model');
+        setProgressMsg(message);
+      } else if (msgStatus === 'progress' && info) {
+        if (info.status === 'init' || info.status === 'progress' || info.status === 'downloading') {
+          if (info.name && info.progress !== undefined) {
+            setDownloadProgress(Math.round(info.progress));
+            setProgressMsg(`Downloading model files... ${Math.round(info.progress)}%`);
+          }
+        } else if (info.status === 'done') {
+          setDownloadProgress(100);
+        }
+      } else if (msgStatus === 'ready') {
+        modelReadyRef.current = true;
+        setStatus('ready');
+        setProgressMsg('');
+        setDownloadProgress(0);
+      } else if (msgStatus === 'transcribing') {
+        setStatus('transcribing');
+        setProgressMsg('Transcribing audio using Whisper model...');
+      } else if (msgStatus === 'complete') {
+        setStatus('complete');
+        setTranscript(result);
+        setTranscriptFormat(result?.chunks?.length ? 'timestamped' : 'plain');
+        setCopyStatus('idle');
+        setProgressMsg('');
+      } else if (msgStatus === 'error') {
+        if (!modelReadyRef.current) {
+          workerRef.current?.terminate();
+          workerRef.current = null;
+        }
+        setStatus('error');
+        setErrorMsg(message);
+      }
+    };
+
+    workerRef.current = worker;
+    return worker;
+  };
+
+  const loadWhisperModel = () => {
+    setTranscript(null);
+    setErrorMsg('');
+    setCopyStatus('idle');
+    setDownloadProgress(0);
+    modelReadyRef.current = false;
+    setStatus('loading_model');
+    setProgressMsg('Initializing WebAssembly...');
+    createTranscriberWorker().postMessage({type: 'load'});
+  };
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -222,7 +263,7 @@ function TranscriberPage() {
     setTranscript(null);
     setErrorMsg('');
     setCopyStatus('idle');
-    setStatus('ready');
+    setStatus(modelReadyRef.current ? 'ready' : 'idle');
     setProgressMsg('');
   };
 
@@ -262,7 +303,7 @@ function TranscriberPage() {
         <div className="mx-auto flex h-12 w-12 flex-col items-center justify-center rounded-full bg-indigo-100 text-indigo-600">
           <CheckCircle className="h-6 w-6" />
         </div>
-        <h2 className="mt-4 text-4xl font-extrabold tracking-tight text-slate-900">Free Local Video Transcriber</h2>
+        <h2 className="mt-4 text-4xl font-extrabold tracking-tight text-slate-900">Free Browser Video Transcriber</h2>
         <p className="mt-2 text-lg text-slate-600">
           Convert MP4 video audio to text directly in your browser.
           <br className="max-sm:hidden" />
@@ -272,7 +313,27 @@ function TranscriberPage() {
 
       <div className="overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-xl">
         <div className="p-8">
-          {['idle', 'loading_model'].includes(status) && (
+          {status === 'idle' && (
+            <div className="flex flex-col items-center justify-center py-12 text-center">
+              <div className="mb-4 flex h-16 w-16 flex-col items-center justify-center rounded-full bg-indigo-50">
+                <FileText className="h-8 w-8 text-indigo-500" />
+              </div>
+              <p className="text-lg font-medium text-slate-900">Whisper model is paused</p>
+              <p className="mt-2 max-w-md text-sm text-slate-500">
+                Load it only when you want to transcribe an audio or video file.
+              </p>
+              <button
+                type="button"
+                onClick={loadWhisperModel}
+                className="mt-6 flex h-12 flex-row items-center justify-center gap-2 rounded-lg bg-indigo-600 px-5 text-sm font-semibold text-white transition hover:bg-indigo-700"
+              >
+                <Download className="h-4 w-4" />
+                <span>Load Whisper model</span>
+              </button>
+            </div>
+          )}
+
+          {status === 'loading_model' && (
             <div className="flex flex-col items-center justify-center py-12 text-center text-slate-500">
               <Loader2 className="mb-4 h-10 w-10 animate-spin text-indigo-500" />
               <p className="text-lg font-medium text-slate-700">Loading AI Model (Whisper)</p>
@@ -430,9 +491,9 @@ function TranscriberPage() {
   );
 }
 
-function YoutubeAudioPage() {
+function YoutubePage() {
   const [url, setUrl] = useState('');
-  const [format, setFormat] = useState<AudioFormat>('mp3');
+  const [format, setFormat] = useState<YoutubeFormat>('mp3');
   const [status, setStatus] = useState<YoutubeStatus>('idle');
   const [videoInfo, setVideoInfo] = useState<YoutubeInfo | null>(null);
   const [errorMsg, setErrorMsg] = useState('');
@@ -497,14 +558,14 @@ function YoutubeAudioPage() {
       const response = await fetch(`/api/youtube/convert?url=${encodeURIComponent(trimmedUrl)}&format=${format}`);
 
       if (!response.ok) {
-        throw new Error(await getApiError(response, 'Could not download the converted audio.'));
+        throw new Error(await getApiError(response, 'Could not download the requested file.'));
       }
 
       const blob = await response.blob();
       const objectUrl = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = objectUrl;
-      link.download = getFilenameFromDisposition(response.headers.get('Content-Disposition'), `youtube-audio.${format}`);
+      link.download = getFilenameFromDisposition(response.headers.get('Content-Disposition'), `youtube-download.${format}`);
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -515,7 +576,7 @@ function YoutubeAudioPage() {
       console.error(err);
       setDownloadStarted(false);
       setStatus('error');
-      setErrorMsg(err.message || 'Could not download the converted audio.');
+      setErrorMsg(err.message || 'Could not download the requested file.');
     }
   };
 
@@ -533,11 +594,11 @@ function YoutubeAudioPage() {
         <div className="mx-auto flex h-12 w-12 flex-col items-center justify-center rounded-full bg-red-50 text-red-600">
           <Youtube className="h-6 w-6" />
         </div>
-        <h2 className="mt-4 text-4xl font-extrabold tracking-tight text-slate-900">YouTube Audio Converter</h2>
+        <h2 className="mt-4 text-4xl font-extrabold tracking-tight text-slate-900">YouTube Converter</h2>
         <p className="mt-2 text-lg text-slate-600">
-          Turn a YouTube video link into an MP3 or WAV download.
+          Download a YouTube video as MP4 or extract audio as MP3/WAV.
           <br className="max-sm:hidden" />
-          Conversion runs through this local server with FFmpeg.
+          Video fetching runs on the app server; audio conversion uses FFmpeg there.
         </p>
       </div>
 
@@ -580,9 +641,9 @@ function YoutubeAudioPage() {
 
           <div className="flex flex-col gap-4 border-t border-slate-100 pt-6 lg:flex-row lg:items-center lg:justify-between">
             <div className="space-y-2">
-              <p className="text-sm font-semibold text-slate-700">Output format</p>
+              <p className="text-sm font-semibold text-slate-700">Download format</p>
               <div className="inline-flex w-full rounded-lg border border-slate-200 bg-slate-100 p-1 sm:w-auto">
-                {(['mp3', 'wav'] as AudioFormat[]).map((option) => (
+                {(['mp3', 'wav', 'mp4'] as YoutubeFormat[]).map((option) => (
                   <button
                     key={option}
                     type="button"
@@ -613,7 +674,7 @@ function YoutubeAudioPage() {
             <div className="flex flex-row gap-3 rounded-xl bg-red-50 p-4 text-red-700">
               <AlertCircle className="mt-0.5 h-5 w-5 flex-none" />
               <div>
-                <p className="font-medium">Could not prepare audio</p>
+                <p className="font-medium">Could not prepare download</p>
                 <p className="mt-1 text-sm text-red-600">{errorMsg}</p>
               </div>
             </div>
@@ -674,13 +735,227 @@ function YoutubeAudioPage() {
   );
 }
 
+function EpubToPdfPage() {
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [status, setStatus] = useState<EpubStatus>('idle');
+  const [progressMsg, setProgressMsg] = useState('');
+  const [errorMsg, setErrorMsg] = useState('');
+  const [result, setResult] = useState<EpubPdfResult | null>(null);
+
+  const applySelectedFile = (file?: File) => {
+    if (!file) return;
+
+    if (!file.name.toLowerCase().endsWith('.epub') && file.type !== 'application/epub+zip') {
+      setSelectedFile(null);
+      setResult(null);
+      setStatus('error');
+      setErrorMsg('Please choose an EPUB file.');
+      return;
+    }
+
+    setSelectedFile(file);
+    setResult(null);
+    setStatus('idle');
+    setErrorMsg('');
+    setProgressMsg('');
+  };
+
+  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    applySelectedFile(event.target.files?.[0]);
+    event.target.value = '';
+  };
+
+  const handleFileDrop = (event: React.DragEvent<HTMLLabelElement>) => {
+    event.preventDefault();
+    applySelectedFile(event.dataTransfer.files?.[0]);
+  };
+
+  const handleConvert = async () => {
+    if (!selectedFile) {
+      setStatus('error');
+      setErrorMsg('Choose an EPUB file first.');
+      return;
+    }
+
+    try {
+      setStatus('processing');
+      setResult(null);
+      setErrorMsg('');
+      setProgressMsg('Reading EPUB...');
+
+      const converted = await convertEpubToPdf(selectedFile, defaultEpubPdfOptions, setProgressMsg);
+      setResult(converted);
+      setStatus('complete');
+      setProgressMsg('');
+    } catch (err: any) {
+      console.error(err);
+      setStatus('error');
+      setErrorMsg(err.message || 'Could not convert this EPUB.');
+      setProgressMsg('');
+    }
+  };
+
+  const handleDownloadPdf = () => {
+    if (!result) return;
+
+    const url = URL.createObjectURL(result.blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = result.filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const reset = () => {
+    setSelectedFile(null);
+    setResult(null);
+    setStatus('idle');
+    setProgressMsg('');
+    setErrorMsg('');
+  };
+
+  return (
+    <div className="mx-auto w-full max-w-3xl space-y-8">
+      <div className="text-center">
+        <div className="mx-auto flex h-12 w-12 flex-col items-center justify-center rounded-full bg-emerald-50 text-emerald-600">
+          <BookOpen className="h-6 w-6" />
+        </div>
+        <h2 className="mt-4 text-4xl font-extrabold tracking-tight text-slate-900">Free Browser EPUB to PDF Converter</h2>
+        <p className="mt-2 text-lg text-slate-600">
+          Turn EPUB books into PDF files in your browser.
+          <br className="max-sm:hidden" />
+          No uploads, no accounts, and private.
+        </p>
+      </div>
+
+      <div className="overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-xl">
+        <div className="space-y-6 p-8">
+          <div className="space-y-3">
+            <label className="text-sm font-semibold text-slate-700">EPUB file</label>
+            <label
+              onDrop={handleFileDrop}
+              onDragOver={(event) => event.preventDefault()}
+              className="flex min-h-72 w-full cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 px-6 py-8 text-center transition-colors hover:bg-slate-100"
+            >
+              <Upload className="mb-4 h-12 w-12 text-slate-400" />
+              <p className="mb-2 text-lg font-medium text-slate-700">
+                <span className="font-semibold text-emerald-600">Choose EPUB</span> or drag and drop
+              </p>
+              <p className="max-w-sm text-sm text-slate-500">
+                {selectedFile ? selectedFile.name : 'Books, articles, manuals, and other .epub files'}
+              </p>
+              <input type="file" accept=".epub,application/epub+zip" className="hidden" onChange={handleFileUpload} />
+            </label>
+          </div>
+
+          <div className="flex flex-col gap-3 border-t border-slate-100 pt-6 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-h-6 text-sm text-slate-500">
+              {selectedFile && (
+                <span>
+                  {selectedFile.name} - {formatCount(Math.max(1, Math.round(selectedFile.size / 1024)))} KB
+                </span>
+              )}
+            </div>
+
+            <div className="flex flex-col gap-2 sm:flex-row">
+              {(selectedFile || result) && (
+                <button
+                  type="button"
+                  onClick={reset}
+                  className="flex h-12 flex-row items-center justify-center gap-2 rounded-lg border border-slate-300 px-5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+                >
+                  <RefreshCw className="h-4 w-4" />
+                  <span>Reset</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={handleConvert}
+                disabled={status === 'processing'}
+                className="flex h-12 flex-row items-center justify-center gap-2 rounded-lg bg-emerald-600 px-5 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {status === 'processing' ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileDown className="h-4 w-4" />}
+                <span>{status === 'processing' ? 'Converting...' : 'Convert to PDF'}</span>
+              </button>
+            </div>
+          </div>
+
+          {status === 'processing' && (
+            <div className="flex flex-row gap-3 rounded-xl bg-emerald-50 p-4 text-emerald-700">
+              <Loader2 className="mt-0.5 h-5 w-5 flex-none animate-spin" />
+              <div>
+                <p className="font-medium">Building PDF</p>
+                <p className="mt-1 text-sm text-emerald-600">{progressMsg || 'Working through the EPUB...'}</p>
+              </div>
+            </div>
+          )}
+
+          {status === 'error' && (
+            <div className="flex flex-row gap-3 rounded-xl bg-red-50 p-4 text-red-700">
+              <AlertCircle className="mt-0.5 h-5 w-5 flex-none" />
+              <div>
+                <p className="font-medium">Could not convert EPUB</p>
+                <p className="mt-1 text-sm text-red-600">{errorMsg}</p>
+              </div>
+            </div>
+          )}
+
+          {status === 'complete' && result && (
+            <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-5">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <div className="flex flex-row items-center gap-2 text-emerald-700">
+                    <CheckCircle className="h-5 w-5" />
+                    <p className="font-semibold">PDF ready</p>
+                  </div>
+                  <p className="mt-2 text-sm text-emerald-700">
+                    {result.title}
+                    {result.author ? ` by ${result.author}` : ''}
+                  </p>
+                  <p className="mt-1 text-xs text-emerald-600">
+                    {formatCount(result.pageCount)} pages - {formatCount(result.chapterCount)} chapters -{' '}
+                    {formatCount(result.wordCount)} words
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleDownloadPdf}
+                  className="flex h-12 flex-row items-center justify-center gap-2 rounded-lg bg-emerald-600 px-5 text-sm font-semibold text-white transition hover:bg-emerald-700"
+                >
+                  <Download className="h-4 w-4" />
+                  <span>Download PDF</span>
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="border-t border-slate-100 bg-slate-50 p-4 text-center">
+          <p className="text-xs text-slate-500">Everything runs in this browser tab. EPUB files are not uploaded.</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [activePage, setActivePage] = useState<AppPage>('transcriber');
 
   const navItems: Array<{page: AppPage; label: string; icon: React.ComponentType<{className?: string}>}> = [
     {page: 'transcriber', label: 'Transcriber', icon: FileText},
-    {page: 'youtube', label: 'YouTube audio', icon: Youtube},
+    {page: 'youtube', label: 'YouTube', icon: Youtube},
+    {page: 'epub', label: 'EPUB to PDF', icon: BookOpen},
   ];
+
+  const renderActivePage = () => {
+    if (activePage === 'youtube') return <YoutubePage />;
+    if (activePage === 'epub') return <EpubToPdfPage />;
+
+    return <TranscriberPage />;
+  };
 
   return (
     <div className="flex min-h-screen flex-col items-center bg-slate-50 px-4 py-8 font-sans sm:px-6 lg:px-8">
@@ -701,14 +976,14 @@ export default function App() {
                   }`}
                 >
                   <Icon className="h-4 w-4" />
-                  <span>{label}</span>
+                  <span className="whitespace-nowrap">{label}</span>
                 </button>
               );
             })}
           </div>
         </nav>
 
-        {activePage === 'transcriber' ? <TranscriberPage /> : <YoutubeAudioPage />}
+        {renderActivePage()}
       </div>
     </div>
   );

@@ -11,7 +11,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const port = process.env.PORT || 8080;
 const distDir = path.join(__dirname, 'dist');
-const audioFormats = new Set(['mp3', 'wav']);
+const youtubeFormats = new Set(['mp3', 'wav', 'mp4']);
 const youtubeInfoClients = ['ANDROID', 'IOS', 'MWEB', 'WEB', 'WEB_EMBEDDED', 'TV', 'TV_SIMPLY', 'TV_EMBEDDED', 'ANDROID_VR'];
 const youtubeDownloadClients = ['ANDROID', 'IOS', 'MWEB', 'WEB', 'WEB_EMBEDDED', 'TV', 'TV_SIMPLY', 'TV_EMBEDDED', 'ANDROID_VR'];
 const maxYoutubeDurationSeconds = Number(process.env.MAX_YOUTUBE_DURATION_SECONDS || 60 * 60 * 2);
@@ -64,7 +64,7 @@ const sanitizeFilename = (value) => {
     .trim()
     .slice(0, 90);
 
-  return filename || 'youtube-audio';
+  return filename || 'youtube-download';
 };
 
 const sendApiError = (res, status, message) => {
@@ -129,7 +129,7 @@ const getYoutubeMetadata = async (url, info, durationSeconds) => {
   const thumbnail = details.thumbnail?.at(-1)?.url || fallback.thumbnail_url || '';
 
   return {
-    title: details.title || fallback.title || 'YouTube audio',
+    title: details.title || fallback.title || 'YouTube video',
     author: details.author || details.channel?.name || fallback.author_name || '',
     durationSeconds,
     thumbnail,
@@ -156,6 +156,28 @@ const getYoutubeAudioStream = async (youtube, videoId) => {
   }
 
   throw lastError || new Error('YouTube did not provide a downloadable audio stream.');
+};
+
+const getYoutubeVideoStream = async (youtube, videoId) => {
+  let lastError = null;
+
+  for (const client of youtubeDownloadClients) {
+    try {
+      const webVideoStream = await youtube.download(videoId, {
+        type: 'video+audio',
+        quality: 'best',
+        format: 'mp4',
+        client,
+      });
+
+      return Readable.fromWeb(webVideoStream);
+    } catch (err) {
+      lastError = err;
+      console.warn(`YouTube MP4 stream failed with ${client}: ${err.message}`);
+    }
+  }
+
+  throw lastError || new Error('YouTube did not provide a downloadable MP4 stream.');
 };
 
 const validateYoutubeRequest = async (url) => {
@@ -198,12 +220,12 @@ app.get('/api/youtube/convert', async (req, res) => {
   const url = getQueryValue(req.query.url);
   const format = getQueryValue(req.query.format).toLowerCase();
 
-  if (!audioFormats.has(format)) {
-    sendApiError(res, 400, 'Choose MP3 or WAV as the output format.');
+  if (!youtubeFormats.has(format)) {
+    sendApiError(res, 400, 'Choose MP3, WAV, or MP4 as the output format.');
     return;
   }
 
-  if (!ffmpegPath) {
+  if (format !== 'mp4' && !ffmpegPath) {
     sendApiError(res, 500, 'FFmpeg is not available on this server.');
     return;
   }
@@ -211,9 +233,43 @@ app.get('/api/youtube/convert', async (req, res) => {
   try {
     const {info, videoId, youtube} = await validateYoutubeRequest(url);
     const metadata = await getYoutubeMetadata(url, info, 0);
-    const title = sanitizeFilename(metadata.title || 'youtube-audio');
+    const title = sanitizeFilename(metadata.title || 'youtube-download');
     const filename = `${title}.${format}`;
-    const contentType = format === 'mp3' ? 'audio/mpeg' : 'audio/wav';
+    const contentTypes = {
+      mp3: 'audio/mpeg',
+      wav: 'audio/wav',
+      mp4: 'video/mp4',
+    };
+    const contentType = contentTypes[format];
+
+    if (format === 'mp4') {
+      const videoStream = await getYoutubeVideoStream(youtube, videoId);
+      let finished = false;
+
+      const abort = (err) => {
+        if (finished) return;
+        finished = true;
+        videoStream.destroy();
+        res.destroy(err);
+      };
+
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      res.setHeader('Cache-Control', 'no-store');
+
+      videoStream.on('error', abort);
+      videoStream.on('end', () => {
+        finished = true;
+      });
+      res.on('close', () => {
+        if (!finished) {
+          videoStream.destroy();
+        }
+      });
+      videoStream.pipe(res);
+      return;
+    }
+
     const ffmpegArgs =
       format === 'mp3'
         ? ['-hide_banner', '-loglevel', 'error', '-i', 'pipe:0', '-vn', '-codec:a', 'libmp3lame', '-b:a', '192k', '-f', 'mp3', 'pipe:1']
