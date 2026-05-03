@@ -64,17 +64,3 @@ export const getApiError = async (response: Response, fallback: string) => {
     return fallback;
   }
 };
-
-export const getFilenameFromDisposition = (disposition: string | null, fallback: string) => {
-  if (!disposition) {
-    return fallback;
-  }
-
-  const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
-  if (utf8Match?.[1]) {
-    return decodeURIComponent(utf8Match[1].replace(/"/g, ''));
-  }
-
-  const filenameMatch = disposition.match(/filename="?([^";]+)"?/i);
-  return filenameMatch?.[1] || fallback;
-};

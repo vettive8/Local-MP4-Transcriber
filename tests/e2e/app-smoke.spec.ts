@@ -54,14 +54,14 @@ test('transcriber does not download Whisper until requested', async ({page}) => 
   await expect(page.getByText('Loading AI Model')).toHaveCount(0);
 });
 
-test('YouTube converter exposes MP4 alongside audio formats', async ({page}) => {
+test('video link preview does not expose public YouTube downloads', async ({page}) => {
   await page.goto('/');
-  await page.getByRole('button', {name: 'YouTube'}).click();
+  await page.getByRole('button', {name: 'Video Links'}).click();
 
-  await expect(page.getByRole('heading', {name: 'YouTube Converter'})).toBeVisible();
-  await expect(page.getByRole('button', {name: 'mp3', exact: true})).toBeVisible();
-  await expect(page.getByRole('button', {name: 'wav', exact: true})).toBeVisible();
-  await expect(page.getByRole('button', {name: 'mp4', exact: true})).toBeVisible();
+  await expect(page.getByRole('heading', {name: 'Video Link Preview'})).toBeVisible();
+  await expect(page.getByRole('button', {name: 'Preview link'})).toBeVisible();
+  await expect(page.getByRole('button', {name: 'Upload media'})).toBeVisible();
+  await expect(page.getByRole('button', {name: /Download MP3|Download WAV|Download MP4/i})).toHaveCount(0);
 });
 
 test('EPUB converter has a simple no-settings flow', async ({page}) => {

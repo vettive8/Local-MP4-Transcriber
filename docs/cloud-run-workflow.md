@@ -89,27 +89,13 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-live-browser-tests.ps1
 
 No environment variables or API keys are required for local transcription. Transcription runs locally in the browser with transformers.js and Whisper.
 
-The YouTube audio converter runs server-side on Cloud Run. If YouTube requires authentication or attestation for Cloud Run traffic, configure one of these on the Cloud Run service:
+The public Cloud Run service does not perform server-side YouTube media downloads. YouTube links are preview-only through oEmbed metadata, and `/api/youtube/convert` intentionally returns `410 Gone`.
 
-- `YOUTUBE_COOKIE`: a YouTube `Cookie` header value from an account that has access to the content.
-- `YOUTUBE_VISITOR_DATA` and `YOUTUBE_PO_TOKEN`: a matching visitor data and PO token pair.
-
-Keep these values out of git and rotate them if the account session changes.
-
-Check whether the live Cloud Run service has the YouTube values configured:
+Check the live Cloud Run environment names without exposing values:
 
 ```powershell
 gcloud.cmd run services describe local-mp4-transcriber --region us-west1 --format="json(spec.template.spec.containers[0].env[].name)"
 ```
-
-Prefer Secret Manager for production values. Example:
-
-```powershell
-gcloud.cmd secrets create youtube-cookie --data-file=.\youtube-cookie.txt
-gcloud.cmd run services update local-mp4-transcriber --region us-west1 --set-secrets YOUTUBE_COOKIE=youtube-cookie:latest
-```
-
-MP4 downloads also run through FFmpeg on the server. The backend downloads the best MP4 video stream and best audio stream separately, then muxes them into one browser-downloadable MP4 response.
 
 The repository still ignores `.env*` files except `.env.example`, so future local experiments do not accidentally get committed.
 
