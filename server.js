@@ -170,7 +170,7 @@ const getYoutubeAudioStream = async (info, youtube, videoId) => {
 
 const getYoutubeVideoStream = async (info, youtube, videoId) => {
   const downloadOptions = {
-    type: 'video+audio',
+    type: 'video',
     quality: 'best',
     format: 'mp4',
   };
@@ -224,7 +224,11 @@ const validateYoutubeRequest = async (url, youtubeClientFactory = getYoutubeClie
   return {info, durationSeconds, videoId, youtube};
 };
 
-export const createApp = ({youtubeClientFactory = getYoutubeClient} = {}) => {
+export const createApp = ({
+  youtubeClientFactory = getYoutubeClient,
+  ffmpegPathOverride = ffmpegPath,
+  spawnProcess = spawn,
+} = {}) => {
   const app = express();
 
   app.get('/api/health', (_req, res) => {
@@ -253,7 +257,7 @@ export const createApp = ({youtubeClientFactory = getYoutubeClient} = {}) => {
       return;
     }
 
-    if (format !== 'mp4' && !ffmpegPath) {
+    if (!ffmpegPathOverride) {
       sendApiError(res, 500, 'FFmpeg is not available on this server.');
       return;
     }
@@ -272,12 +276,54 @@ export const createApp = ({youtubeClientFactory = getYoutubeClient} = {}) => {
 
       if (format === 'mp4') {
         const videoStream = await getYoutubeVideoStream(info, youtube, videoId);
+        const audioStream = await getYoutubeAudioStream(info, youtube, videoId);
+        const ffmpeg = spawnProcess(
+          ffmpegPathOverride,
+          [
+            '-hide_banner',
+            '-loglevel',
+            'error',
+            '-i',
+            'pipe:3',
+            '-i',
+            'pipe:4',
+            '-map',
+            '0:v:0',
+            '-map',
+            '1:a:0',
+            '-c:v',
+            'copy',
+            '-c:a',
+            'aac',
+            '-b:a',
+            '192k',
+            '-movflags',
+            'frag_keyframe+empty_moov',
+            '-f',
+            'mp4',
+            'pipe:1',
+          ],
+          {
+            stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'],
+          },
+        );
+        let ffmpegError = '';
         let finished = false;
+        const videoInput = ffmpeg.stdio[3];
+        const audioInput = ffmpeg.stdio[4];
+
+        if (!videoInput || !audioInput) {
+          throw new Error('FFmpeg input pipes are unavailable.');
+        }
 
         const abort = (err) => {
           if (finished) return;
           finished = true;
           videoStream.destroy();
+          audioStream.destroy();
+          videoInput?.destroy();
+          audioInput?.destroy();
+          ffmpeg.kill('SIGKILL');
           res.destroy(err);
         };
 
@@ -286,15 +332,32 @@ export const createApp = ({youtubeClientFactory = getYoutubeClient} = {}) => {
         res.setHeader('Cache-Control', 'no-store');
 
         videoStream.on('error', abort);
-        videoStream.on('end', () => {
+        audioStream.on('error', abort);
+        ffmpeg.on('error', abort);
+        videoInput?.on('error', () => {});
+        audioInput?.on('error', () => {});
+        ffmpeg.stderr.on('data', (chunk) => {
+          ffmpegError += chunk.toString();
+        });
+        ffmpeg.on('close', (code) => {
+          if (finished) return;
           finished = true;
+
+          if (code !== 0 && !res.writableEnded) {
+            res.destroy(new Error(ffmpegError.trim() || 'FFmpeg failed to mux the MP4.'));
+          }
         });
         res.on('close', () => {
           if (!finished) {
             videoStream.destroy();
+            audioStream.destroy();
+            ffmpeg.kill('SIGKILL');
           }
         });
-        videoStream.pipe(res);
+
+        videoStream.pipe(videoInput);
+        audioStream.pipe(audioInput);
+        ffmpeg.stdout.pipe(res);
         return;
       }
 
@@ -304,7 +367,7 @@ export const createApp = ({youtubeClientFactory = getYoutubeClient} = {}) => {
           : ['-hide_banner', '-loglevel', 'error', '-i', 'pipe:0', '-vn', '-codec:a', 'pcm_s16le', '-ar', '44100', '-f', 'wav', 'pipe:1'];
 
       const audioStream = await getYoutubeAudioStream(info, youtube, videoId);
-      const ffmpeg = spawn(ffmpegPath, ffmpegArgs, {
+      const ffmpeg = spawnProcess(ffmpegPathOverride, ffmpegArgs, {
         stdio: ['pipe', 'pipe', 'pipe'],
       });
       let ffmpegError = '';

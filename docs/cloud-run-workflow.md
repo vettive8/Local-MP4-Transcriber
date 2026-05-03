@@ -96,6 +96,21 @@ The YouTube audio converter runs server-side on Cloud Run. If YouTube requires a
 
 Keep these values out of git and rotate them if the account session changes.
 
+Check whether the live Cloud Run service has the YouTube values configured:
+
+```powershell
+gcloud.cmd run services describe local-mp4-transcriber --region us-west1 --format="json(spec.template.spec.containers[0].env[].name)"
+```
+
+Prefer Secret Manager for production values. Example:
+
+```powershell
+gcloud.cmd secrets create youtube-cookie --data-file=.\youtube-cookie.txt
+gcloud.cmd run services update local-mp4-transcriber --region us-west1 --set-secrets YOUTUBE_COOKIE=youtube-cookie:latest
+```
+
+MP4 downloads also run through FFmpeg on the server. The backend downloads the best MP4 video stream and best audio stream separately, then muxes them into one browser-downloadable MP4 response.
+
 The repository still ignores `.env*` files except `.env.example`, so future local experiments do not accidentally get committed.
 
 ## Cleanup

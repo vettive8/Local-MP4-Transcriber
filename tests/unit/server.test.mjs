@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import {EventEmitter} from 'node:events';
+import {PassThrough} from 'node:stream';
 import test from 'node:test';
 
 import {createApp, getYoutubeVideoId, sanitizeFilename, youtubeFormats} from '../../server.js';
@@ -49,14 +51,14 @@ test('invalid YouTube format is rejected before network work', async () => {
   }
 });
 
-test('MP4 conversion uses the validated YouTube info before extra player lookups', async () => {
+test('MP4 conversion muxes validated YouTube video and audio streams', async () => {
   let basicInfoCalls = 0;
   let fallbackDownloadCalls = 0;
   const infoDownloadOptions = [];
-  const makeStream = () =>
+  const makeStream = (bytes) =>
     new ReadableStream({
       start(controller) {
-        controller.enqueue(new Uint8Array([1, 2, 3]));
+        controller.enqueue(new Uint8Array(bytes));
         controller.close();
       },
     });
@@ -67,7 +69,7 @@ test('MP4 conversion uses the validated YouTube info before extra player lookups
     },
     download: async (options) => {
       infoDownloadOptions.push(options);
-      return makeStream();
+      return makeStream(options.type === 'video' ? [1, 2, 3] : [4, 5, 6]);
     },
   };
   const fakeYoutube = {
@@ -82,7 +84,37 @@ test('MP4 conversion uses the validated YouTube info before extra player lookups
       throw new Error('The fallback client loop should not run.');
     },
   };
-  const app = createApp({youtubeClientFactory: async () => fakeYoutube});
+  const spawnCalls = [];
+  const fakeSpawn = (command, args, options) => {
+    spawnCalls.push({command, args, options});
+
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.stdio = [null, child.stdout, child.stderr, new PassThrough(), new PassThrough()];
+    child.kill = () => {
+      child.killed = true;
+    };
+
+    let closedInputs = 0;
+    const closeIfMuxed = () => {
+      closedInputs += 1;
+
+      if (closedInputs === 2) {
+        child.stdout.end(Buffer.from([7, 8, 9]));
+        setImmediate(() => child.emit('close', 0));
+      }
+    };
+
+    child.stdio[3].on('finish', closeIfMuxed);
+    child.stdio[4].on('finish', closeIfMuxed);
+    return child;
+  };
+  const app = createApp({
+    youtubeClientFactory: async () => fakeYoutube,
+    ffmpegPathOverride: 'fake-ffmpeg',
+    spawnProcess: fakeSpawn,
+  });
   const server = app.listen(0);
 
   try {
@@ -94,15 +126,47 @@ test('MP4 conversion uses the validated YouTube info before extra player lookups
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('content-type'), 'video/mp4');
     assert.equal(response.headers.get('content-disposition'), 'attachment; filename="Cached MP4.mp4"');
-    assert.deepEqual(new Uint8Array(await response.arrayBuffer()), new Uint8Array([1, 2, 3]));
+    assert.deepEqual(new Uint8Array(await response.arrayBuffer()), new Uint8Array([7, 8, 9]));
     assert.equal(basicInfoCalls, 1);
     assert.equal(fallbackDownloadCalls, 0);
     assert.deepEqual(infoDownloadOptions, [
       {
-        type: 'video+audio',
+        type: 'video',
         quality: 'best',
         format: 'mp4',
       },
+      {
+        type: 'audio',
+        quality: 'best',
+        format: 'any',
+      },
+    ]);
+    assert.equal(spawnCalls.length, 1);
+    assert.equal(spawnCalls[0].command, 'fake-ffmpeg');
+    assert.deepEqual(spawnCalls[0].options.stdio, ['ignore', 'pipe', 'pipe', 'pipe', 'pipe']);
+    assert.deepEqual(spawnCalls[0].args, [
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-i',
+      'pipe:3',
+      '-i',
+      'pipe:4',
+      '-map',
+      '0:v:0',
+      '-map',
+      '1:a:0',
+      '-c:v',
+      'copy',
+      '-c:a',
+      'aac',
+      '-b:a',
+      '192k',
+      '-movflags',
+      'frag_keyframe+empty_moov',
+      '-f',
+      'mp4',
+      'pipe:1',
     ]);
   } finally {
     await new Promise((resolve) => server.close(resolve));
