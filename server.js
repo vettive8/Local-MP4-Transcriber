@@ -88,10 +88,10 @@ const getYoutubeBasicInfo = async (youtube, videoId) => {
     try {
       const info = await youtube.getBasicInfo(videoId, {client});
       const details = info.basic_info || {};
-      fallbackInfo ||= info;
+      fallbackInfo ||= {info};
 
       if (details.title || details.author || details.duration) {
-        return info;
+        return {info};
       }
     } catch (err) {
       lastError = err;
@@ -135,15 +135,26 @@ const getYoutubeMetadata = async (url, info, durationSeconds) => {
   };
 };
 
-const getYoutubeAudioStream = async (youtube, videoId) => {
+const getYoutubeAudioStream = async (info, youtube, videoId) => {
+  const downloadOptions = {
+    type: 'audio',
+    quality: 'best',
+    format: 'any',
+  };
   let lastError = null;
+
+  try {
+    const webAudioStream = await info.download(downloadOptions);
+    return Readable.fromWeb(webAudioStream);
+  } catch (err) {
+    lastError = err;
+    console.warn(`YouTube audio stream failed with validated metadata: ${err.message}`);
+  }
 
   for (const client of youtubeDownloadClients) {
     try {
       const webAudioStream = await youtube.download(videoId, {
-        type: 'audio',
-        quality: 'best',
-        format: 'any',
+        ...downloadOptions,
         client,
       });
 
@@ -157,15 +168,26 @@ const getYoutubeAudioStream = async (youtube, videoId) => {
   throw lastError || new Error('YouTube did not provide a downloadable audio stream.');
 };
 
-const getYoutubeVideoStream = async (youtube, videoId) => {
+const getYoutubeVideoStream = async (info, youtube, videoId) => {
+  const downloadOptions = {
+    type: 'video+audio',
+    quality: 'best',
+    format: 'mp4',
+  };
   let lastError = null;
+
+  try {
+    const webVideoStream = await info.download(downloadOptions);
+    return Readable.fromWeb(webVideoStream);
+  } catch (err) {
+    lastError = err;
+    console.warn(`YouTube MP4 stream failed with validated metadata: ${err.message}`);
+  }
 
   for (const client of youtubeDownloadClients) {
     try {
       const webVideoStream = await youtube.download(videoId, {
-        type: 'video+audio',
-        quality: 'best',
-        format: 'mp4',
+        ...downloadOptions,
         client,
       });
 
@@ -179,7 +201,7 @@ const getYoutubeVideoStream = async (youtube, videoId) => {
   throw lastError || new Error('YouTube did not provide a downloadable MP4 stream.');
 };
 
-const validateYoutubeRequest = async (url) => {
+const validateYoutubeRequest = async (url, youtubeClientFactory = getYoutubeClient) => {
   const videoId = getYoutubeVideoId(url);
 
   if (!/^[\w-]{11}$/.test(videoId)) {
@@ -188,8 +210,8 @@ const validateYoutubeRequest = async (url) => {
     throw error;
   }
 
-  const youtube = await getYoutubeClient();
-  const info = await getYoutubeBasicInfo(youtube, videoId);
+  const youtube = await youtubeClientFactory();
+  const {info} = await getYoutubeBasicInfo(youtube, videoId);
   const durationSeconds = Number(info.basic_info.duration || 0);
 
   if (durationSeconds > maxYoutubeDurationSeconds) {
@@ -202,7 +224,7 @@ const validateYoutubeRequest = async (url) => {
   return {info, durationSeconds, videoId, youtube};
 };
 
-export const createApp = () => {
+export const createApp = ({youtubeClientFactory = getYoutubeClient} = {}) => {
   const app = express();
 
   app.get('/api/health', (_req, res) => {
@@ -213,7 +235,7 @@ export const createApp = () => {
     const url = getQueryValue(req.query.url);
 
     try {
-      const {info, durationSeconds} = await validateYoutubeRequest(url);
+      const {info, durationSeconds} = await validateYoutubeRequest(url, youtubeClientFactory);
       res.json(await getYoutubeMetadata(url, info, durationSeconds));
     } catch (err) {
       console.error(`YouTube info failed: ${err.message}`);
@@ -237,7 +259,7 @@ export const createApp = () => {
     }
 
     try {
-      const {info, videoId, youtube} = await validateYoutubeRequest(url);
+      const {info, videoId, youtube} = await validateYoutubeRequest(url, youtubeClientFactory);
       const metadata = await getYoutubeMetadata(url, info, 0);
       const title = sanitizeFilename(metadata.title || 'youtube-download');
       const filename = `${title}.${format}`;
@@ -249,7 +271,7 @@ export const createApp = () => {
       const contentType = contentTypes[format];
 
       if (format === 'mp4') {
-        const videoStream = await getYoutubeVideoStream(youtube, videoId);
+        const videoStream = await getYoutubeVideoStream(info, youtube, videoId);
         let finished = false;
 
         const abort = (err) => {
@@ -281,7 +303,7 @@ export const createApp = () => {
           ? ['-hide_banner', '-loglevel', 'error', '-i', 'pipe:0', '-vn', '-codec:a', 'libmp3lame', '-b:a', '192k', '-f', 'mp3', 'pipe:1']
           : ['-hide_banner', '-loglevel', 'error', '-i', 'pipe:0', '-vn', '-codec:a', 'pcm_s16le', '-ar', '44100', '-f', 'wav', 'pipe:1'];
 
-      const audioStream = await getYoutubeAudioStream(youtube, videoId);
+      const audioStream = await getYoutubeAudioStream(info, youtube, videoId);
       const ffmpeg = spawn(ffmpegPath, ffmpegArgs, {
         stdio: ['pipe', 'pipe', 'pipe'],
       });
