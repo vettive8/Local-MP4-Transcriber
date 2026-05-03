@@ -4,9 +4,9 @@
 
 # Browser Media Tools
 
-Browser-first tools for transcription, video link previews, and EPUB to PDF conversion.
+Browser-first tools for transcription, local YouTube downloads, and EPUB to PDF conversion.
 
-No paid APIs or app accounts are required. Transcription and EPUB conversion run in the browser tab; YouTube links are preview-only in the public app.
+No paid APIs or app accounts are required. Transcription and EPUB conversion run in the browser tab. YouTube conversion is available only when you run this project on localhost.
 
 View your app in AI Studio: https://ai.studio/apps/f9687355-65a2-46f2-ac25-33ceeb50e5cc
 
@@ -19,13 +19,24 @@ View your app in AI Studio: https://ai.studio/apps/f9687355-65a2-46f2-ac25-33cee
 2. Run the app:
    `npm run dev`
 
+For local YouTube to MP4/MP3/WAV conversion, run the full local server:
+
+```powershell
+npm ci
+npm run local:youtube
+```
+
+Then open `http://localhost:8080`.
+
+See [docs/local-youtube-converter.md](docs/local-youtube-converter.md) for the step-by-step walkthrough.
+
 ## Architecture
 
-- `src/App.tsx` owns the React UI and tool navigation for Transcriber, Video Links, and EPUB to PDF.
+- `src/App.tsx` owns the React UI and tool navigation for Transcriber, YouTube, and EPUB to PDF.
 - `src/appTypes.ts`, `src/appConfig.ts`, and `src/appHelpers.ts` hold shared UI vocabulary, defaults, and browser helpers.
 - `src/epubToPdf.ts` converts EPUB files in the browser with JSZip and jsPDF.
 - `src/pdfTextLayout.js` contains testable PDF text wrapping helpers.
-- `server.js` serves the production build and exposes `/api/youtube/info` for oEmbed link previews. Public YouTube downloads return `410 Gone`.
+- `server.js` serves the production build and exposes `/api/youtube/*` for YouTube metadata and local-only MP3/WAV/MP4 conversion.
 - `tests/unit/` covers server helpers and PDF layout logic.
 - `tests/e2e/` covers browser flows with Playwright, including a generated EPUB-to-PDF download.
 - `.github/workflows/` runs CI and deploys Cloud Run after CI succeeds on `main`.

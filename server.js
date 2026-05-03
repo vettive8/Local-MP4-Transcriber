@@ -1,13 +1,35 @@
 import express from 'express';
 import path from 'path';
+import {spawn} from 'child_process';
 import {fileURLToPath} from 'url';
+import {Readable} from 'stream';
+import {Innertube} from 'youtubei.js';
+import ffmpegPath from 'ffmpeg-static';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const port = process.env.PORT || 8080;
 const distDir = path.join(__dirname, 'dist');
+const publicGithubUrl = 'https://github.com/vettive8/Local-MP4-Transcriber';
+const localYoutubeGuideUrl = `${publicGithubUrl}/blob/main/docs/local-youtube-converter.md`;
+export const youtubeFormats = new Set(['mp3', 'wav', 'mp4']);
+const youtubeInfoClients = ['ANDROID', 'IOS', 'MWEB', 'WEB', 'WEB_EMBEDDED', 'TV', 'TV_SIMPLY', 'TV_EMBEDDED', 'ANDROID_VR'];
+const youtubeDownloadClients = ['ANDROID', 'IOS', 'MWEB', 'WEB', 'WEB_EMBEDDED', 'TV', 'TV_SIMPLY', 'TV_EMBEDDED', 'ANDROID_VR'];
+const maxYoutubeDurationSeconds = Number(process.env.MAX_YOUTUBE_DURATION_SECONDS || 60 * 60 * 2);
+let youtubeClientPromise = null;
 
 const getQueryValue = (value) => (typeof value === 'string' ? value.trim() : '');
+const getEnvValue = (name) => process.env[name]?.trim() || undefined;
+
+const getYoutubeClient = () => {
+  youtubeClientPromise ||= Innertube.create({
+    cookie: getEnvValue('YOUTUBE_COOKIE'),
+    visitor_data: getEnvValue('YOUTUBE_VISITOR_DATA'),
+    po_token: getEnvValue('YOUTUBE_PO_TOKEN'),
+  });
+
+  return youtubeClientPromise;
+};
 
 export const getYoutubeVideoId = (value) => {
   try {
@@ -50,34 +72,154 @@ const sendApiError = (res, status, message) => {
   res.status(status).json({error: message});
 };
 
+const getRequestHostname = (req) => {
+  const host = req.headers.host || '';
+
+  if (host.startsWith('[')) {
+    return host.slice(1, host.indexOf(']')).toLowerCase();
+  }
+
+  return host.split(':')[0].toLowerCase();
+};
+
+const isLocalHostname = (hostname) => ['localhost', '127.0.0.1', '::1'].includes(hostname);
+
+const canRunYoutubeDownloads = (req) =>
+  process.env.ENABLE_PUBLIC_YOUTUBE_DOWNLOADS === 'true' ||
+  (!process.env.K_SERVICE && isLocalHostname(getRequestHostname(req)));
+
+const isYoutubeAuthError = (err) => /login|required|sign in|bot/i.test(err?.message || '');
+
+const getYoutubeErrorMessage = (err, fallback) => {
+  if (isYoutubeAuthError(err)) {
+    return 'YouTube is requiring authentication for this environment. The converter is intended for local/private use; try running it from localhost or use the local setup guide.';
+  }
+
+  return err.message || fallback;
+};
+
+const getYoutubeBasicInfo = async (youtube, videoId) => {
+  let fallbackInfo = null;
+  let lastError = null;
+
+  for (const client of youtubeInfoClients) {
+    try {
+      const info = await youtube.getBasicInfo(videoId, {client});
+      const details = info.basic_info || {};
+      fallbackInfo ||= {info};
+
+      if (details.title || details.author || details.duration) {
+        return {info};
+      }
+    } catch (err) {
+      lastError = err;
+      console.warn(`YouTube metadata lookup failed with ${client}: ${err.message}`);
+    }
+  }
+
+  if (fallbackInfo) {
+    return fallbackInfo;
+  }
+
+  throw lastError || new Error('Could not read the YouTube video.');
+};
+
 const getYoutubeOEmbed = async (url) => {
   try {
     const response = await fetch(`https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(url)}`);
 
     if (!response.ok) {
-      throw new Error(`oEmbed returned ${response.status}`);
+      return {};
     }
 
     return response.json();
   } catch (err) {
     console.warn(`YouTube oEmbed lookup failed: ${err.message}`);
-    const error = new Error('Could not preview that YouTube link.');
-    error.statusCode = 502;
-    throw error;
+    return {};
   }
 };
 
-const getYoutubeMetadata = async (url) => {
-  const metadata = await getYoutubeOEmbed(url);
+const getYoutubeMetadata = async (url, info, durationSeconds) => {
+  const details = info.basic_info || {};
+  const needsFallback = !details.title || !details.author || !details.thumbnail?.length;
+  const fallback = needsFallback ? await getYoutubeOEmbed(url) : {};
+  const thumbnail = details.thumbnail?.at(-1)?.url || fallback.thumbnail_url || '';
 
   return {
-    title: metadata.title || 'YouTube video',
-    author: metadata.author_name || '',
-    thumbnail: metadata.thumbnail_url || '',
+    title: details.title || fallback.title || 'YouTube video',
+    author: details.author || details.channel?.name || fallback.author_name || '',
+    durationSeconds,
+    thumbnail,
   };
 };
 
-const validateYoutubeUrl = (url) => {
+const getYoutubeAudioStream = async (info, youtube, videoId) => {
+  const downloadOptions = {
+    type: 'audio',
+    quality: 'best',
+    format: 'any',
+  };
+  let lastError = null;
+
+  try {
+    const webAudioStream = await info.download(downloadOptions);
+    return Readable.fromWeb(webAudioStream);
+  } catch (err) {
+    lastError = err;
+    console.warn(`YouTube audio stream failed with validated metadata: ${err.message}`);
+  }
+
+  for (const client of youtubeDownloadClients) {
+    try {
+      const webAudioStream = await youtube.download(videoId, {
+        ...downloadOptions,
+        client,
+      });
+
+      return Readable.fromWeb(webAudioStream);
+    } catch (err) {
+      lastError = err;
+      console.warn(`YouTube audio stream failed with ${client}: ${err.message}`);
+    }
+  }
+
+  throw lastError || new Error('YouTube did not provide a downloadable audio stream.');
+};
+
+const getYoutubeVideoStream = async (info, youtube, videoId) => {
+  const downloadOptions = {
+    type: 'video',
+    quality: 'best',
+    format: 'mp4',
+  };
+  let lastError = null;
+
+  try {
+    const webVideoStream = await info.download(downloadOptions);
+    return Readable.fromWeb(webVideoStream);
+  } catch (err) {
+    lastError = err;
+    console.warn(`YouTube MP4 stream failed with validated metadata: ${err.message}`);
+  }
+
+  for (const client of youtubeDownloadClients) {
+    try {
+      const webVideoStream = await youtube.download(videoId, {
+        ...downloadOptions,
+        client,
+      });
+
+      return Readable.fromWeb(webVideoStream);
+    } catch (err) {
+      lastError = err;
+      console.warn(`YouTube MP4 stream failed with ${client}: ${err.message}`);
+    }
+  }
+
+  throw lastError || new Error('YouTube did not provide a downloadable MP4 stream.');
+};
+
+const validateYoutubeRequest = async (url, youtubeClientFactory = getYoutubeClient) => {
   const videoId = getYoutubeVideoId(url);
 
   if (!/^[\w-]{11}$/.test(videoId)) {
@@ -86,10 +228,25 @@ const validateYoutubeUrl = (url) => {
     throw error;
   }
 
-  return videoId;
+  const youtube = await youtubeClientFactory();
+  const {info} = await getYoutubeBasicInfo(youtube, videoId);
+  const durationSeconds = Number(info.basic_info.duration || 0);
+
+  if (durationSeconds > maxYoutubeDurationSeconds) {
+    const maxMinutes = Math.round(maxYoutubeDurationSeconds / 60);
+    const error = new Error(`This video is longer than the ${maxMinutes}-minute conversion limit.`);
+    error.statusCode = 413;
+    throw error;
+  }
+
+  return {info, durationSeconds, videoId, youtube};
 };
 
-export const createApp = () => {
+export const createApp = ({
+  youtubeClientFactory = getYoutubeClient,
+  ffmpegPathOverride = ffmpegPath,
+  spawnProcess = spawn,
+} = {}) => {
   const app = express();
 
   app.get('/api/health', (_req, res) => {
@@ -100,21 +257,189 @@ export const createApp = () => {
     const url = getQueryValue(req.query.url);
 
     try {
-      validateYoutubeUrl(url);
-      res.json(await getYoutubeMetadata(url));
+      const {info, durationSeconds} = await validateYoutubeRequest(url, youtubeClientFactory);
+      res.json(await getYoutubeMetadata(url, info, durationSeconds));
     } catch (err) {
       console.error(`YouTube info failed: ${err.message}`);
-      const status = err.statusCode || 502;
-      sendApiError(res, status, err.message || 'Could not read the YouTube video.');
+      const status = err.statusCode || (isYoutubeAuthError(err) ? 401 : 502);
+      sendApiError(res, status, getYoutubeErrorMessage(err, 'Could not read the YouTube video.'));
     }
   });
 
-  app.get('/api/youtube/convert', (_req, res) => {
-    sendApiError(
-      res,
-      410,
-      'Public YouTube downloads are disabled. Upload media files you own or use a direct download source with explicit permission.',
-    );
+  app.get('/api/youtube/convert', async (req, res) => {
+    const url = getQueryValue(req.query.url);
+    const format = getQueryValue(req.query.format).toLowerCase();
+
+    if (!canRunYoutubeDownloads(req)) {
+      sendApiError(
+        res,
+        403,
+        `YouTube downloads are available only when this project runs on localhost. Open ${localYoutubeGuideUrl} to run it locally.`,
+      );
+      return;
+    }
+
+    if (!youtubeFormats.has(format)) {
+      sendApiError(res, 400, 'Choose MP3, WAV, or MP4 as the output format.');
+      return;
+    }
+
+    if (!ffmpegPathOverride) {
+      sendApiError(res, 500, 'FFmpeg is not available on this server.');
+      return;
+    }
+
+    try {
+      const {info, videoId, youtube} = await validateYoutubeRequest(url, youtubeClientFactory);
+      const metadata = await getYoutubeMetadata(url, info, 0);
+      const title = sanitizeFilename(metadata.title || 'youtube-download');
+      const filename = `${title}.${format}`;
+      const contentTypes = {
+        mp3: 'audio/mpeg',
+        wav: 'audio/wav',
+        mp4: 'video/mp4',
+      };
+      const contentType = contentTypes[format];
+
+      if (format === 'mp4') {
+        const videoStream = await getYoutubeVideoStream(info, youtube, videoId);
+        const audioStream = await getYoutubeAudioStream(info, youtube, videoId);
+        const ffmpeg = spawnProcess(
+          ffmpegPathOverride,
+          [
+            '-hide_banner',
+            '-loglevel',
+            'error',
+            '-i',
+            'pipe:3',
+            '-i',
+            'pipe:4',
+            '-map',
+            '0:v:0',
+            '-map',
+            '1:a:0',
+            '-c:v',
+            'copy',
+            '-c:a',
+            'aac',
+            '-b:a',
+            '192k',
+            '-movflags',
+            'frag_keyframe+empty_moov',
+            '-f',
+            'mp4',
+            'pipe:1',
+          ],
+          {
+            stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'],
+          },
+        );
+        let ffmpegError = '';
+        let finished = false;
+        const videoInput = ffmpeg.stdio[3];
+        const audioInput = ffmpeg.stdio[4];
+
+        if (!videoInput || !audioInput) {
+          throw new Error('FFmpeg input pipes are unavailable.');
+        }
+
+        const abort = (err) => {
+          if (finished) return;
+          finished = true;
+          videoStream.destroy();
+          audioStream.destroy();
+          videoInput?.destroy();
+          audioInput?.destroy();
+          ffmpeg.kill('SIGKILL');
+          res.destroy(err);
+        };
+
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.setHeader('Cache-Control', 'no-store');
+
+        videoStream.on('error', abort);
+        audioStream.on('error', abort);
+        ffmpeg.on('error', abort);
+        videoInput?.on('error', () => {});
+        audioInput?.on('error', () => {});
+        ffmpeg.stderr.on('data', (chunk) => {
+          ffmpegError += chunk.toString();
+        });
+        ffmpeg.on('close', (code) => {
+          if (finished) return;
+          finished = true;
+
+          if (code !== 0 && !res.writableEnded) {
+            res.destroy(new Error(ffmpegError.trim() || 'FFmpeg failed to mux the MP4.'));
+          }
+        });
+        res.on('close', () => {
+          if (!finished) {
+            videoStream.destroy();
+            audioStream.destroy();
+            ffmpeg.kill('SIGKILL');
+          }
+        });
+
+        videoStream.pipe(videoInput);
+        audioStream.pipe(audioInput);
+        ffmpeg.stdout.pipe(res);
+        return;
+      }
+
+      const ffmpegArgs =
+        format === 'mp3'
+          ? ['-hide_banner', '-loglevel', 'error', '-i', 'pipe:0', '-vn', '-codec:a', 'libmp3lame', '-b:a', '192k', '-f', 'mp3', 'pipe:1']
+          : ['-hide_banner', '-loglevel', 'error', '-i', 'pipe:0', '-vn', '-codec:a', 'pcm_s16le', '-ar', '44100', '-f', 'wav', 'pipe:1'];
+
+      const audioStream = await getYoutubeAudioStream(info, youtube, videoId);
+      const ffmpeg = spawnProcess(ffmpegPathOverride, ffmpegArgs, {
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      let ffmpegError = '';
+      let finished = false;
+
+      const abort = (err) => {
+        if (finished) return;
+        finished = true;
+        audioStream.destroy();
+        ffmpeg.kill('SIGKILL');
+        res.destroy(err);
+      };
+
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      res.setHeader('Cache-Control', 'no-store');
+
+      audioStream.on('error', abort);
+      ffmpeg.on('error', abort);
+      ffmpeg.stdin.on('error', () => {});
+      ffmpeg.stderr.on('data', (chunk) => {
+        ffmpegError += chunk.toString();
+      });
+      ffmpeg.on('close', (code) => {
+        if (finished) return;
+        finished = true;
+
+        if (code !== 0 && !res.writableEnded) {
+          res.destroy(new Error(ffmpegError.trim() || 'FFmpeg failed to convert the audio.'));
+        }
+      });
+      res.on('close', () => {
+        if (!finished) {
+          audioStream.destroy();
+          ffmpeg.kill('SIGKILL');
+        }
+      });
+
+      audioStream.pipe(ffmpeg.stdin);
+      ffmpeg.stdout.pipe(res);
+    } catch (err) {
+      console.error(`YouTube conversion failed: ${err.message}`);
+      const status = err.statusCode || (isYoutubeAuthError(err) ? 401 : 502);
+      sendApiError(res, status, getYoutubeErrorMessage(err, 'Could not convert the YouTube video.'));
+    }
   });
 
   app.use(

@@ -1,5 +1,7 @@
 export type AppPage = 'transcriber' | 'youtube' | 'epub';
 
+export type YoutubeFormat = 'mp3' | 'wav' | 'mp4';
+
 export type YoutubeInfo = {
   title: string;
   author?: string;
@@ -7,7 +9,7 @@ export type YoutubeInfo = {
   thumbnail?: string;
 };
 
-export type YoutubeStatus = 'idle' | 'loading' | 'ready' | 'error';
+export type YoutubeStatus = 'idle' | 'loading' | 'ready' | 'downloading' | 'error';
 
 export type EpubStatus = 'idle' | 'processing' | 'complete' | 'error';
 

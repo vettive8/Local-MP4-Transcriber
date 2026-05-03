@@ -89,13 +89,15 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-live-browser-tests.ps1
 
 No environment variables or API keys are required for local transcription. Transcription runs locally in the browser with transformers.js and Whisper.
 
-The public Cloud Run service does not perform server-side YouTube media downloads. YouTube links are preview-only through oEmbed metadata, and `/api/youtube/convert` intentionally returns `410 Gone`.
+The public Cloud Run service does not run YouTube downloads. The same code supports YouTube to MP4/MP3/WAV only when opened from `localhost` or `127.0.0.1`; the public site shows a link to [the local YouTube converter guide](local-youtube-converter.md).
 
 Check the live Cloud Run environment names without exposing values:
 
 ```powershell
 gcloud.cmd run services describe local-mp4-transcriber --region us-west1 --format="json(spec.template.spec.containers[0].env[].name)"
 ```
+
+Do not put personal YouTube cookies or PO tokens on the public Cloud Run service. For your own local use, run `npm run local:youtube` and open `http://localhost:8080`.
 
 The repository still ignores `.env*` files except `.env.example`, so future local experiments do not accidentally get committed.
 

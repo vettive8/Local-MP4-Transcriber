@@ -10,6 +10,7 @@ import {
   FileText,
   Link,
   Loader2,
+  Music,
   RefreshCw,
   Upload,
   Youtube,
@@ -22,8 +23,10 @@ import {defaultEpubPdfOptions} from './appConfig';
 import {
   copyText,
   formatCount,
+  formatDuration,
   formatTimestamp,
   getApiError,
+  getFilenameFromDisposition,
   getTranscriptText,
 } from './appHelpers';
 import type {
@@ -31,9 +34,15 @@ import type {
   EpubStatus,
   TranscriptFormat,
   TranscriptResult,
+  YoutubeFormat,
   YoutubeInfo,
   YoutubeStatus,
 } from './appTypes';
+
+const publicGithubUrl = 'https://github.com/vettive8/Local-MP4-Transcriber';
+const localYoutubeGuideUrl = `${publicGithubUrl}/blob/main/docs/local-youtube-converter.md`;
+const localYoutubeHostnames = new Set(['localhost', '127.0.0.1', '::1']);
+const isLocalYoutubeHost = () => localYoutubeHostnames.has(window.location.hostname);
 
 function TranscriberPage() {
   const [status, setStatus] = useState<
@@ -394,11 +403,13 @@ function TranscriberPage() {
   );
 }
 
-function YoutubePage({onOpenTranscriber}: {onOpenTranscriber: () => void}) {
+function YoutubePage() {
   const [url, setUrl] = useState('');
+  const [format, setFormat] = useState<YoutubeFormat>('mp3');
   const [status, setStatus] = useState<YoutubeStatus>('idle');
   const [videoInfo, setVideoInfo] = useState<YoutubeInfo | null>(null);
   const [errorMsg, setErrorMsg] = useState('');
+  const [downloadStarted, setDownloadStarted] = useState(false);
 
   const fetchVideoInfo = async () => {
     const trimmedUrl = url.trim();
@@ -411,6 +422,7 @@ function YoutubePage({onOpenTranscriber}: {onOpenTranscriber: () => void}) {
 
     setStatus('loading');
     setErrorMsg('');
+    setDownloadStarted(false);
 
     try {
       const response = await fetch(`/api/youtube/info?url=${encodeURIComponent(trimmedUrl)}`);
@@ -437,14 +449,113 @@ function YoutubePage({onOpenTranscriber}: {onOpenTranscriber: () => void}) {
     await fetchVideoInfo();
   };
 
+  const handleDownload = async () => {
+    const trimmedUrl = url.trim();
+    if (!trimmedUrl) {
+      setStatus('error');
+      setErrorMsg('Paste a YouTube link first.');
+      return;
+    }
+
+    if (!videoInfo) {
+      const ok = await fetchVideoInfo();
+      if (!ok) return;
+    }
+
+    try {
+      setStatus('downloading');
+      setErrorMsg('');
+      setDownloadStarted(false);
+
+      const response = await fetch(`/api/youtube/convert?url=${encodeURIComponent(trimmedUrl)}&format=${format}`);
+
+      if (!response.ok) {
+        throw new Error(await getApiError(response, 'Could not download the requested file.'));
+      }
+
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = getFilenameFromDisposition(response.headers.get('Content-Disposition'), `youtube-download.${format}`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(objectUrl);
+      setDownloadStarted(true);
+      setStatus('ready');
+    } catch (err: any) {
+      console.error(err);
+      setDownloadStarted(false);
+      setStatus('error');
+      setErrorMsg(err.message || 'Could not download the requested file.');
+    }
+  };
+
   const clearUrl = () => {
     setUrl('');
     setVideoInfo(null);
     setErrorMsg('');
+    setDownloadStarted(false);
     setStatus('idle');
   };
 
-  const currentUrl = url.trim();
+  if (!isLocalYoutubeHost()) {
+    return (
+      <div className="mx-auto w-full max-w-3xl space-y-8">
+        <div className="text-center">
+          <div className="mx-auto flex h-12 w-12 flex-col items-center justify-center rounded-full bg-red-50 text-red-600">
+            <Youtube className="h-6 w-6" />
+          </div>
+          <h2 className="mt-4 text-4xl font-extrabold tracking-tight text-slate-900">YouTube to MP4 Runs Locally</h2>
+          <p className="mt-2 text-lg text-slate-600">
+            This public browser app cannot download YouTube media from Cloud Run.
+            <br className="max-sm:hidden" />
+            Run the project on your computer to paste a link and convert it.
+          </p>
+        </div>
+
+        <div className="overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-xl">
+          <div className="space-y-6 p-8">
+            <div className="flex flex-row gap-3 rounded-xl bg-amber-50 p-4 text-amber-800">
+              <AlertCircle className="mt-0.5 h-5 w-5 flex-none" />
+              <div>
+                <p className="font-medium">Local-only converter</p>
+                <p className="mt-1 text-sm text-amber-700">
+                  Cloud Run traffic gets blocked by YouTube download protections. On localhost, the converter uses your own machine and exposes MP3, WAV, and MP4.
+                </p>
+              </div>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <a
+                href={localYoutubeGuideUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="flex h-12 flex-row items-center justify-center gap-2 rounded-lg bg-red-600 px-5 text-sm font-semibold text-white transition hover:bg-red-700"
+              >
+                <BookOpen className="h-4 w-4" />
+                <span>Open local guide</span>
+              </a>
+              <a
+                href={publicGithubUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="flex h-12 flex-row items-center justify-center gap-2 rounded-lg border border-slate-300 px-5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+              >
+                <Link className="h-4 w-4" />
+                <span>View GitHub project</span>
+              </a>
+            </div>
+          </div>
+
+          <div className="border-t border-slate-100 bg-slate-50 p-4 text-center">
+            <p className="text-xs text-slate-500">Transcriber and EPUB to PDF still run directly in this browser.</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto w-full max-w-3xl space-y-8">
@@ -452,11 +563,11 @@ function YoutubePage({onOpenTranscriber}: {onOpenTranscriber: () => void}) {
         <div className="mx-auto flex h-12 w-12 flex-col items-center justify-center rounded-full bg-red-50 text-red-600">
           <Youtube className="h-6 w-6" />
         </div>
-        <h2 className="mt-4 text-4xl font-extrabold tracking-tight text-slate-900">Video Link Preview</h2>
+        <h2 className="mt-4 text-4xl font-extrabold tracking-tight text-slate-900">YouTube Converter</h2>
         <p className="mt-2 text-lg text-slate-600">
-          Preview public YouTube links without downloading them on the server.
+          Download a YouTube video as MP4 or extract audio as MP3/WAV.
           <br className="max-sm:hidden" />
-          Convert media files you already have from the Transcriber tab.
+          Video fetching runs on the app server; audio conversion uses FFmpeg there.
         </p>
       </div>
 
@@ -476,6 +587,7 @@ function YoutubePage({onOpenTranscriber}: {onOpenTranscriber: () => void}) {
                   onChange={(event) => {
                     setUrl(event.target.value);
                     setVideoInfo(null);
+                    setDownloadStarted(false);
                     if (status === 'error') {
                       setStatus('idle');
                       setErrorMsg('');
@@ -491,25 +603,39 @@ function YoutubePage({onOpenTranscriber}: {onOpenTranscriber: () => void}) {
                 className="flex h-12 flex-row items-center justify-center gap-2 rounded-lg border border-slate-300 px-5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {status === 'loading' ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle className="h-4 w-4" />}
-                <span>Preview link</span>
+                <span>Check link</span>
               </button>
             </div>
           </div>
 
-          <div className="flex flex-col gap-4 rounded-xl border border-amber-100 bg-amber-50 p-4 text-amber-800 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <p className="text-sm font-semibold">Server-side downloads are off</p>
-              <p className="mt-1 text-sm text-amber-700">
-                For public production, upload media files you own instead of having Cloud Run download from YouTube.
-              </p>
+          <div className="flex flex-col gap-4 border-t border-slate-100 pt-6 lg:flex-row lg:items-center lg:justify-between">
+            <div className="space-y-2">
+              <p className="text-sm font-semibold text-slate-700">Download format</p>
+              <div className="inline-flex w-full rounded-lg border border-slate-200 bg-slate-100 p-1 sm:w-auto">
+                {(['mp3', 'wav', 'mp4'] as YoutubeFormat[]).map((option) => (
+                  <button
+                    key={option}
+                    type="button"
+                    onClick={() => setFormat(option)}
+                    aria-pressed={format === option}
+                    className={`flex-1 rounded-md px-4 py-2 text-sm font-semibold uppercase transition sm:flex-none ${
+                      format === option ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    {option}
+                  </button>
+                ))}
+              </div>
             </div>
+
             <button
               type="button"
-              onClick={onOpenTranscriber}
-              className="flex h-12 flex-none flex-row items-center justify-center gap-2 rounded-lg bg-slate-900 px-5 text-sm font-semibold text-white transition hover:bg-slate-800"
+              onClick={handleDownload}
+              disabled={status === 'loading' || status === 'downloading'}
+              className="flex h-12 flex-row items-center justify-center gap-2 rounded-lg bg-red-600 px-5 text-sm font-semibold text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              <Upload className="h-4 w-4" />
-              <span>Upload media</span>
+              {status === 'downloading' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+              <span>{status === 'downloading' ? 'Preparing...' : `Download ${format.toUpperCase()}`}</span>
             </button>
           </div>
 
@@ -517,7 +643,7 @@ function YoutubePage({onOpenTranscriber}: {onOpenTranscriber: () => void}) {
             <div className="flex flex-row gap-3 rounded-xl bg-red-50 p-4 text-red-700">
               <AlertCircle className="mt-0.5 h-5 w-5 flex-none" />
               <div>
-                <p className="font-medium">Could not preview link</p>
+                <p className="font-medium">Could not prepare download</p>
                 <p className="mt-1 text-sm text-red-600">{errorMsg}</p>
               </div>
             </div>
@@ -544,37 +670,28 @@ function YoutubePage({onOpenTranscriber}: {onOpenTranscriber: () => void}) {
                     )}
                     <span className="inline-flex items-center gap-1">
                       <Clock className="h-4 w-4 text-slate-400" />
-                      Preview only
+                      {formatDuration(videoInfo.durationSeconds)}
                     </span>
-                  </div>
-                  <div className="mt-4 flex flex-col gap-2 sm:flex-row">
-                    <a
-                      href={currentUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="flex h-10 flex-row items-center justify-center gap-2 rounded-lg border border-slate-300 px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-                    >
-                      <Youtube className="h-4 w-4" />
-                      <span>Open source link</span>
-                    </a>
-                    <button
-                      type="button"
-                      onClick={onOpenTranscriber}
-                      className="flex h-10 flex-row items-center justify-center gap-2 rounded-lg bg-slate-900 px-4 text-sm font-semibold text-white transition hover:bg-slate-800"
-                    >
-                      <Upload className="h-4 w-4" />
-                      <span>Upload owned file</span>
-                    </button>
+                    <span className="inline-flex items-center gap-1">
+                      <Music className="h-4 w-4 text-slate-400" />
+                      {format.toUpperCase()}
+                    </span>
                   </div>
                 </div>
               </div>
+            </div>
+          )}
+
+          {downloadStarted && (
+            <div className="rounded-xl bg-emerald-50 p-4 text-sm font-medium text-emerald-700">
+              Your {format.toUpperCase()} download should begin in a moment.
             </div>
           )}
         </form>
 
         <div className="border-t border-slate-100 bg-slate-50 p-4 text-center">
           <p className="text-xs text-slate-500">
-            Download your own uploads through the source platform first, then upload the media file here.
+            Use this only for videos you own, public-domain media, or content you have permission to download.
           </p>
           {url && (
             <button type="button" onClick={clearUrl} className="mt-2 text-xs font-medium text-red-600 hover:text-red-700">
@@ -883,12 +1000,12 @@ export default function App() {
 
   const navItems: Array<{page: AppPage; label: string; icon: React.ComponentType<{className?: string}>}> = [
     {page: 'transcriber', label: 'Transcriber', icon: FileText},
-    {page: 'youtube', label: 'Video Links', icon: Youtube},
+    {page: 'youtube', label: 'YouTube', icon: Youtube},
     {page: 'epub', label: 'EPUB to PDF', icon: BookOpen},
   ];
 
   const renderActivePage = () => {
-    if (activePage === 'youtube') return <YoutubePage onOpenTranscriber={() => setActivePage('transcriber')} />;
+    if (activePage === 'youtube') return <YoutubePage />;
     if (activePage === 'epub') return <EpubToPdfPage />;
 
     return <TranscriberPage />;
